@@ -1,0 +1,24 @@
+[package]
+name = "maku-hime"
+version = "0.1.0"
+edition = "2024"
+description = "maku-hime · 幕姬：轻量可穿屏的 B 站弹幕姬"
+license = "MIT"
+authors = ["lumorian"]
+
+[lib]
+name = "maku_hime_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+makuhime-core = { path = "../crates/makuhime-core" }
+makuhime-server = { path = "../crates/makuhime-server" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

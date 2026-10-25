@@ -1,0 +1,34 @@
+{
+  "name": "maku-hime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "maku-hime · 幕姬，轻量可穿屏的 B 站弹幕姬",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "record": "node scripts/capture.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "qrcode": "^1.5.4",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.8.0",
+    "vite": "^7.0.0",
+    "ws": "^8.18.0"
+  }
+}

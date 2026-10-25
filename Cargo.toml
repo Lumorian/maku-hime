@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/makuhime-core", "crates/makuhime-server", "src-tauri"]
+default-members = ["crates/makuhime-core", "crates/makuhime-server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["lumorian"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+opt-level = "s"
+
+[profile.dev]
+opt-level = 0

@@ -1,0 +1,25 @@
+[package]
+name = "makuhime-server"
+version = "0.1.0"
+edition = "2024"
+description = "maku-hime 本地服务：REST + WebSocket + OBS 弹幕墙"
+license = "MIT"
+
+[[bin]]
+name = "maku-hime-server"
+path = "src/main.rs"
+
+[dependencies]
+makuhime-core = { path = "../makuhime-core" }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "fs", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+

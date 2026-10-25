@@ -1,0 +1,331 @@
+/* 弹幕墙：对齐 B 站官方 chat-history-panel 的排版（详见 docs/research/chat-panel-parity.md） */
+
+.wall {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--wall-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  color: var(--text);
+}
+
+.wall-bare {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
+.wall-bare .wall-scroll {
+  padding: 6px 10px;
+}
+
+.wall-scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 5px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.wall-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wall-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+  min-height: 20px;
+}
+
+.wall-inner {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 100%;
+  margin-top: auto;
+  width: 100%;
+}
+
+.row {
+  padding: 5px;
+  border-radius: 6px;
+  line-height: 20px;
+  font-size: inherit;
+}
+
+.row:hover {
+  background: var(--row-hover);
+}
+
+.wall.is-compact .row {
+  padding: 2px 5px;
+}
+
+/* ---------------- 聊天弹幕 ---------------- */
+
+.row-chat {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+}
+
+.avatar {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--panel-3);
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.avatar-fallback {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.row-body {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.uname {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.uname.is-admin {
+  color: var(--brand-strong);
+  font-weight: 600;
+}
+
+.uname.is-guard {
+  color: var(--guard);
+}
+
+.separator {
+  color: var(--text-3);
+}
+
+.row-chat .text {
+  color: var(--text);
+}
+
+.emoticon {
+  max-height: 28px;
+  vertical-align: middle;
+  border-radius: 3px;
+}
+
+/* ---------------- 粉丝勋章 ---------------- */
+
+.medal {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  margin-right: 4px;
+  vertical-align: -3px;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.medal-name {
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  color: #fff;
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  transform: scale(0.94);
+  transform-origin: left center;
+  white-space: nowrap;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.medal-level {
+  height: 15px;
+  min-width: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+/* ---------------- 礼物 / 上舰 ---------------- */
+
+.row-gift,
+.row-guard {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+}
+
+.row-gift .uname,
+.row-guard .uname {
+  color: var(--text-2);
+}
+
+.gift-action {
+  color: var(--text-3);
+}
+
+.gift-name,
+.gift-num,
+.gift-price {
+  color: var(--pay);
+  font-weight: 500;
+}
+
+.gift-price {
+  opacity: 0.85;
+  font-size: 0.92em;
+}
+
+.guard-name {
+  color: var(--guard);
+  font-weight: 600;
+}
+
+.guard-governor {
+  color: #ff6b6b;
+}
+
+.guard-admiral {
+  color: #ffa057;
+}
+
+/* ---------------- 醒目留言 ---------------- */
+
+.row-sc {
+  padding: 5px;
+}
+
+.sc-card {
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #333;
+  box-shadow: var(--sc-shadow);
+}
+
+.sc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sc-name {
+  font-weight: 600;
+  font-size: 0.95em;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sc-price {
+  font-weight: 700;
+  font-size: 0.95em;
+}
+
+.sc-text {
+  margin-top: 2px;
+  font-size: 1em;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------- 系统行 ---------------- */
+
+.row-system {
+  color: var(--text-3);
+  font-size: 0.92em;
+}
+
+.system-text b {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.mini-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--panel-3);
+  font-size: 9px;
+  vertical-align: -2px;
+}
+
+.row-meta {
+  margin-left: 8px;
+  font-size: 0.85em;
+  opacity: 0.6;
+}
+
+/* ---------------- 新弹幕提示 / 空态 ---------------- */
+
+.wall-new-pill {
+  position: absolute;
+  right: 8px;
+  bottom: 12px;
+  height: 22px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 11px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: 0 6px 18px rgba(255, 102, 153, 0.35);
+  transition: transform 0.15s ease;
+}
+
+.wall-new-pill:hover {
+  transform: translateY(-1px);
+}
+
+.wall-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-3);
+  padding: 40px 0;
+}
+
+.wall-empty p {
+  margin: 0 0 6px;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.wall-empty span {
+  font-size: 12px;
+}

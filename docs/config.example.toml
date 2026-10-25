@@ -1,0 +1,64 @@
+# maku-hime 配置示例
+# 实际路径：~/.config/maku-hime/config.toml
+# 所有字段都有默认值，不需要的段落可以整段删掉。
+
+[server]
+host = "127.0.0.1"     # 改成 0.0.0.0 会把面板暴露到局域网（不建议）
+port = 3939            # 被占用时自动顺延
+open_browser = false
+
+[ui]
+theme = "dark"         # dark | light
+font_size = 13
+opacity = 1.0
+max_rows = 300         # 弹幕墙保留条数，也是历史查询的默认深度
+show_avatar = true
+show_enter = false     # 进房/关注消息比较吵，默认关
+show_like = false
+show_gift = true
+compact = false
+
+[overlay]
+width = 380
+height = 640
+x = 40
+y = 80
+font_size = 13
+opacity = 0.88         # 悬浮窗底板透明度
+click_through = true   # 锁定 = 点击穿透
+always_on_top = true
+theme = "dark"
+show_header = true     # 悬浮窗顶部的小条（直播状态 + 锁定按钮）
+locked = true
+
+[danmaku]
+auto_reconnect = true
+reconnect_max_seconds = 30
+heartbeat_seconds = 30
+keep_history = true
+history_limit = 2000
+stats_interval_seconds = 30
+
+[tts]
+enabled = false
+provider = "auto"      # auto | command | webview | off
+command = []           # provider = command 时填，例如 ["espeak-ng", "-v", "zh", "{text}"]
+voice = ""
+rate = 1.0
+volume = 1.0
+read_chat = true
+read_gift = true
+read_guard = true
+read_super_chat = true
+min_super_chat_price = 0
+max_chars = 60
+max_queue = 32
+
+[send]
+color = 16777215       # 十进制 RGB，默认白色
+font_size = 25
+mode = 1
+max_length = 20
+
+# 启动时自动订阅的房间号
+rooms = [7734200]
