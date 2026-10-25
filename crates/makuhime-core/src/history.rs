@@ -221,19 +221,27 @@ fn spawn_writer(dir: PathBuf) -> Sender<WriteOp> {
             loop {
                 match rx.recv_timeout(Duration::from_millis(500)) {
                     Ok(WriteOp::Line { room_id, line }) => {
-                        let writer = writers.entry(room_id).or_insert_with(|| {
+                        // 文件打不开就跳过这条，不要把整个写线程拖死
+                        if let std::collections::hash_map::Entry::Vacant(slot) =
+                            writers.entry(room_id)
+                        {
                             let path = dir.join(format!("{room_id}.jsonl"));
                             if let Some(parent) = path.parent() {
                                 let _ = std::fs::create_dir_all(parent);
                             }
-                            match OpenOptions::new().create(true).append(true).open(path) {
-                                Ok(file) => BufWriter::new(file),
-                                Err(_) => {
-                                    BufWriter::new(std::fs::File::create("/dev/null").unwrap())
+                            match OpenOptions::new().create(true).append(true).open(&path) {
+                                Ok(file) => {
+                                    slot.insert(BufWriter::new(file));
+                                }
+                                Err(err) => {
+                                    tracing::warn!(%err, path = %path.display(), "历史文件打开失败，跳过写入");
+                                    continue;
                                 }
                             }
-                        });
-                        let _ = writeln!(writer, "{line}");
+                        }
+                        if let Some(writer) = writers.get_mut(&room_id) {
+                            let _ = writeln!(writer, "{line}");
+                        }
                     }
                     Ok(WriteOp::Clear { room_id, ack }) => {
                         if let Some(mut writer) = writers.remove(&room_id) {
