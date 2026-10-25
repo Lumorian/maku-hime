@@ -200,6 +200,7 @@ docs/                    设计说明、协议调研、官方面板排版规格
 ```bash
 bash scripts/dev.sh 7734200   # 同时起 Rust 服务（3939）与 Vite（5173，热更新）
 cargo test                    # 引擎 / 解析 / 历史 / 路由测试（79 个）
+npm test                      # 前端组件与状态测试（Vitest + Testing Library，17 个）
 npm run lint                  # ESLint（TypeScript + react-hooks）
 npm run typecheck             # 前端类型检查
 node scripts/screenshot.mjs http://localhost:5173/ shot.png 8000 1440 900   # headless 截图
@@ -207,8 +208,10 @@ node scripts/capture.mjs 7734200 60 fixtures/live.jsonl                     # �
 ```
 
 弹幕夹具 `crates/makuhime-core/tests/fixtures/messages.jsonl` 就是真实抓包裁剪出来的，
-解析器的单元测试跑在它上面。CI（`.github/workflows/ci.yml`）会跑
-`cargo fmt --check`、`cargo clippy -D warnings`、全部 Rust 测试，以及前端的 lint / typecheck / build。
+解析器的单元测试跑在它上面。前端测试覆盖数字/在线人数/时间格式化、zustand 去重与窗口裁剪，
+以及弹幕墙的「只渲染最近 N 条」「上翻不打断阅读 + 新弹幕提示」等行为。
+CI（`.github/workflows/ci.yml`）会跑 `cargo fmt --check`、`cargo clippy -D warnings`、
+全部 Rust 测试，以及前端的 lint / typecheck / test / build。
 
 ### 安全边界
 

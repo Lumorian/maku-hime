@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::time::Duration;
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{Local, TimeZone};
 
 use crate::error::Result;
 use crate::model::{Event, LiveEvent};
@@ -507,21 +507,6 @@ fn format_time(ts: i64) -> String {
     }
 }
 
-/// 供前端显示「3 分钟前」之类的相对时间时使用的工具。
-pub fn human_time(ts: i64) -> String {
-    let now = chrono::Local::now().timestamp_millis();
-    let diff = (now - ts).max(0) / 1000;
-    match diff {
-        0..=9 => "刚刚".into(),
-        10..=59 => format!("{diff} 秒前"),
-        60..=3599 => format!("{} 分钟前", diff / 60),
-        3600..=86_399 => format!("{} 小时前", diff / 3600),
-        _ => DateTime::<chrono::Utc>::from_timestamp_millis(ts)
-            .map(|t| t.with_timezone(&Local).format("%m-%d %H:%M").to_string())
-            .unwrap_or_default(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,10 +649,13 @@ mod tests {
     }
 
     #[test]
-    fn format_parse_and_human_time() {
+    fn export_format_parsing() {
         assert_eq!(ExportFormat::parse("CSV"), ExportFormat::Csv);
         assert_eq!(ExportFormat::parse("jsonl").extension(), "jsonl");
-        assert_eq!(human_time(chrono::Local::now().timestamp_millis()), "刚刚");
+        assert_eq!(
+            ExportFormat::parse("json").content_type(),
+            "application/json; charset=utf-8"
+        );
     }
 
     #[test]

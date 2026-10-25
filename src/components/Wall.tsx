@@ -61,14 +61,19 @@ export function Wall({ roomId, config, className, bare, showMeta }: WallProps) {
   // 只看长度会导致自动跟随静默失效（新弹幕来了却不再滚动）。
   const lastKey = rows.length > 0 ? rows[rows.length - 1].id : null;
 
-  // 新弹幕到达：跟随中就贴底，否则累计「N 条新弹幕」
+  // 新弹幕到达：跟随中就贴底，否则累计「N 条新弹幕」。
+  // 注意要比较「最后一条是否真的变了」——否则用户一往上翻（following 变化）
+  // 就会被误记成一条新弹幕。
+  const lastKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
+    const isNew = lastKey !== null && lastKey !== lastKeyRef.current;
+    lastKeyRef.current = lastKey;
     if (following) {
       container.scrollTop = container.scrollHeight;
       setPending(0);
-    } else if (lastKey !== null) {
+    } else if (isNew) {
       setPending((value) => value + 1);
     }
   }, [lastKey, following, config.max_rows]);

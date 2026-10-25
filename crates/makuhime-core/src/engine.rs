@@ -338,7 +338,8 @@ impl Engine {
 
         let danmaku_config = self.inner.config.read().await.danmaku.clone();
         let client = DanmakuClient::new(room_id, self.inner.http.clone(), &danmaku_config);
-        let (tx, mut rx) = mpsc::unbounded_channel::<ClientEvent>();
+        // 有界通道：消费端慢时反压到 WebSocket 读取侧，避免内存无界增长
+        let (tx, mut rx) = mpsc::channel::<ClientEvent>(512);
 
         let client_cancel = cancel.clone();
         tokio::spawn(async move {

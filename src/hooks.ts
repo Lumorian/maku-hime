@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, socketUrl } from "./api";
+import { api, resetApiBase, socketUrl } from "./api";
 import { useStore } from "./store";
 import type { ServerEvent } from "./types";
 
@@ -53,9 +53,12 @@ export function useSocket(): void {
       };
       socket.onclose = () => {
         setStatus("closed");
+        // 下次重连重新探测端口，覆盖「服务重启换了端口」的情况
+        resetApiBase();
         scheduleReconnect();
       };
       socket.onerror = () => {
+        resetApiBase();
         socket?.close();
       };
     };

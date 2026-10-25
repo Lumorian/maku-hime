@@ -42,6 +42,11 @@ export async function apiBase(): Promise<string> {
   return "";
 }
 
+/** 后端换了端口（重启、多实例）时，让下一次调用重新探测。 */
+export function resetApiBase(): void {
+  resolvedBase = null;
+}
+
 export async function socketUrl(): Promise<string> {
   const base = await apiBase();
   const origin = base || window.location.origin;
@@ -57,8 +62,7 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const base = await apiBase();
+async function send<T>(base: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${base}${path}`, {
     ...init,
     headers: {
@@ -74,6 +78,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(message, payload?.error?.code ?? "http_error");
   }
   return payload as T;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const base = await apiBase();
+  try {
+    return await send<T>(base, path, init);
+  } catch (error) {
+    // fetch 自身的网络错误（TypeError）通常意味着服务换了端口，
+    // 重新探测一次再试，避免一次重启就要刷新页面
+    if (!(error instanceof TypeError)) throw error;
+    resetApiBase();
+    return send<T>(await apiBase(), path, init);
+  }
 }
 
 export const api = {

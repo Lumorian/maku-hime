@@ -12,6 +12,8 @@ export type ConnectionStatus = "connecting" | "open" | "closed";
 interface AppStore {
   snapshot: Snapshot | null;
   events: Record<number, Event[]>;
+  /** 每个房间已见过的事件 id，O(1) 去重（不进 UI，不进快照） */
+  seen: Record<number, Set<string>>;
   status: ConnectionStatus;
   activeRoom: number | null;
   toasts: Toast[];
@@ -32,6 +34,7 @@ let toastSeq = 0;
 export const useStore = create<AppStore>((set, get) => ({
   snapshot: null,
   events: {},
+  seen: {},
   status: "connecting",
   activeRoom: null,
   toasts: [],
@@ -73,10 +76,21 @@ export const useStore = create<AppStore>((set, get) => ({
     const state = get();
     const cap = Math.max(400, (state.snapshot?.config.ui.max_rows ?? 300) * 2);
     const list = state.events[event.room_id] ?? [];
-    if (list.some((item) => item.id === event.id)) return;
+    const seen = state.seen[event.room_id] ?? new Set<string>();
+    if (seen.has(event.id)) return;
+
     const next = list.length >= cap ? list.slice(list.length - cap + 1) : list.slice();
+    // 被挤出窗口的那条要从去重集合里删掉，否则集合只增不减
+    if (list.length >= cap) {
+      const dropped = list[0];
+      if (dropped) seen.delete(dropped.id);
+    }
+    seen.add(event.id);
     next.push(event);
-    set({ events: { ...state.events, [event.room_id]: next } });
+    set({
+      events: { ...state.events, [event.room_id]: next },
+      seen: { ...state.seen, [event.room_id]: seen },
+    });
   },
 
   setStatus: (status) => {
@@ -102,7 +116,10 @@ export const useStore = create<AppStore>((set, get) => ({
     set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),
 
   clearRoomEvents: (roomId) =>
-    set((state) => ({ events: { ...state.events, [roomId]: [] } })),
+    set((state) => ({
+      events: { ...state.events, [roomId]: [] },
+      seen: { ...state.seen, [roomId]: new Set<string>() },
+    })),
 }));
 
 /** WebView 后端：交给浏览器 speechSynthesis。 */

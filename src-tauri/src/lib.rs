@@ -4,7 +4,6 @@
 //! HTTP/WebSocket 服务；桌面壳额外提供窗口操作（穿透、置顶、缩放、托盘）。
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use makuhime_core::config::AppConfig;
 use makuhime_core::engine::Engine;
@@ -14,10 +13,11 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 
 /// 桌面壳运行时状态。
 pub struct DesktopState {
-    /// 本地服务端口（供窗口注入）
+    /// 本地服务端口（供窗口注入）。
+    ///
+    /// 悬浮窗的穿透 / 尺寸 / 位置都以配置文件为唯一真相：
+    /// 窗口操作只负责「应用」，写配置由前端通过 /api/config 完成。
     port: u16,
-    /// 悬浮窗当前是否穿透
-    click_through: Mutex<bool>,
 }
 
 fn overlay_window(app: &AppHandle) -> Option<WebviewWindow> {
@@ -49,8 +49,6 @@ async fn toggle_overlay(app: AppHandle, room_id: Option<u64>) -> Result<bool, St
 
 #[tauri::command]
 async fn set_click_through(app: AppHandle, enabled: bool) -> Result<bool, String> {
-    let state = app.state::<DesktopState>();
-    *state.click_through.lock().unwrap() = enabled;
     if let Some(window) = overlay_window(&app) {
         window
             .set_ignore_cursor_events(enabled)
@@ -102,7 +100,8 @@ fn create_main(app: &AppHandle, port: u16) -> tauri::Result<()> {
 fn create_overlay(app: &AppHandle, room_id: Option<u64>) -> Result<(), String> {
     let config = AppConfig::load();
     let state = app.state::<DesktopState>();
-    let click_through = *state.click_through.lock().unwrap();
+    // 穿透状态直接读配置（唯一真相），不再额外维护一份内存状态
+    let click_through = config.overlay.click_through;
 
     let window = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("obs.html".into()))
         .title("maku-hime · 弹幕墙")
@@ -212,10 +211,7 @@ pub fn run() {
             let (listener, addr) = makuhime_server::bind_sync(&host, port)?;
             let actual_port = addr.port();
 
-            app.manage(DesktopState {
-                port: actual_port,
-                click_through: Mutex::new(config.overlay.click_through),
-            });
+            app.manage(DesktopState { port: actual_port });
 
             create_main(app.handle(), actual_port)?;
 

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_util::sync::CancellationToken;
@@ -61,7 +61,10 @@ impl DanmakuClient {
     }
 
     /// 常驻运行：内部自己重连，直到 cancel 被触发。
-    pub async fn run(self, tx: UnboundedSender<ClientEvent>, cancel: CancellationToken) {
+    ///
+    /// 事件通道是有界的：消费端跟不上时通过 `send().await` 反压到 WebSocket 读取侧，
+    /// 宁可让 TCP 缓冲堆积，也不在内存里无限排队。
+    pub async fn run(self, tx: Sender<ClientEvent>, cancel: CancellationToken) {
         let mut attempt: u32 = 0;
         loop {
             if cancel.is_cancelled() {
@@ -80,9 +83,17 @@ impl DanmakuClient {
             if started.elapsed() > Duration::from_secs(30) {
                 attempt = 0;
             }
-            let _ = tx.send(ClientEvent::Disconnected {
-                reason: reason.clone(),
-            });
+            if !emit(
+                &tx,
+                ClientEvent::Disconnected {
+                    reason: reason.clone(),
+                },
+                &cancel,
+            )
+            .await
+            {
+                break;
+            }
             if !self.auto_reconnect {
                 break;
             }
@@ -104,14 +115,19 @@ impl DanmakuClient {
 
     async fn connect_and_stream(
         &self,
-        tx: &UnboundedSender<ClientEvent>,
+        tx: &Sender<ClientEvent>,
         cancel: &CancellationToken,
     ) -> Result<()> {
         let info = room::fetch_danmu_info(&self.http, self.room_id).await?;
         if info.token.is_empty() {
-            let _ = tx.send(ClientEvent::Warning(
-                "未取得进房 token，使用默认弹幕服务器（可能收不到部分消息）".into(),
-            ));
+            emit(
+                tx,
+                ClientEvent::Warning(
+                    "未取得进房 token，使用默认弹幕服务器（可能收不到部分消息）".into(),
+                ),
+                cancel,
+            )
+            .await;
         }
         let buvid = self
             .http
@@ -149,7 +165,9 @@ impl DanmakuClient {
         let auth = packet::auth(0, self.room_id, &buvid, &info.token)?;
         ws.send(Message::binary(auth)).await?;
 
-        let _ = tx.send(ClientEvent::Connected { host: host.clone() });
+        if !emit(tx, ClientEvent::Connected { host: host.clone() }, cancel).await {
+            return Ok(());
+        }
         tracing::info!(room_id = self.room_id, host, "弹幕连接已建立");
 
         let mut heartbeat = tokio::time::interval(self.heartbeat);
@@ -188,7 +206,7 @@ impl DanmakuClient {
                                 match frame.op {
                                     OP_HEARTBEAT_REPLY => {
                                         if let Some(popularity) = packet::parse_popularity(&frame) {
-                                            let _ = tx.send(ClientEvent::Popularity(popularity));
+                                            emit(tx, ClientEvent::Popularity(popularity), cancel).await;
                                         }
                                     }
                                     OP_AUTH_REPLY => {
@@ -198,7 +216,7 @@ impl DanmakuClient {
                                             .and_then(|v| v.get("code").and_then(Value::as_i64))
                                             .unwrap_or(-1);
                                         if code != 0 {
-                                            let _ = tx.send(ClientEvent::AuthRejected { code });
+                                            emit(tx, ClientEvent::AuthRejected { code }, cancel).await;
                                             return Err(Error::other(format!("认证被拒绝，code={code}")));
                                         }
                                         tracing::debug!(room_id = self.room_id, "进房认证通过");
@@ -206,8 +224,11 @@ impl DanmakuClient {
                                     OP_MESSAGE => {
                                         let Ok(value) = frame.json::<Value>() else { continue };
                                         let now = now_millis();
-                                        if let Some(event) = parser::parse_event(&value, self.room_id, now) {
-                                            let _ = tx.send(ClientEvent::Message(Box::new(event)));
+                                        if let Some(event) = parser::parse_event(&value, self.room_id, now)
+                                            && !emit(tx, ClientEvent::Message(Box::new(event)), cancel)
+                                                .await
+                                        {
+                                            return Ok(());
                                         }
                                     }
                                     _ => {}
@@ -225,6 +246,14 @@ impl DanmakuClient {
                 }
             }
         }
+    }
+}
+
+/// 发送事件；通道关闭或收到取消信号时返回 false。
+async fn emit(tx: &Sender<ClientEvent>, event: ClientEvent, cancel: &CancellationToken) -> bool {
+    tokio::select! {
+        _ = cancel.cancelled() => false,
+        result = tx.send(event) => result.is_ok(),
     }
 }
 
