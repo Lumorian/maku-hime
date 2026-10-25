@@ -38,3 +38,23 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --exclude maku-hime --all-targets -- -D warnings
       - run: cargo test --workspace --exclude maku-hime
+
+  desktop:
+    name: 桌面壳（cargo check）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Tauri v2 在 Linux 上需要这些系统库
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - run: npm ci
+      - run: npm run build
+      # tauri-build 会读取 frontendDist，所以要先把 dist 构建出来
+      - run: cargo check -p maku-hime

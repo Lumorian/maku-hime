@@ -23,6 +23,8 @@
   看到的内容完全一致。
 - **悬浮窗**：透明、置顶、无边框，支持点击穿透（锁定时不挡鼠标）、拖拽移动、右下角缩放，
   位置尺寸写进配置，下次启动恢复。
+- **单实例 + 窗口记忆**：重复启动只聚焦已有窗口（带 `--overlay` 会顺带打开悬浮窗）；
+  悬浮窗拖动/缩放后的位置尺寸会写回配置，下次启动恢复。
 - **扫码发弹幕**：手机扫二维码登录，SESSDATA / bili_jct 只落在本机（0600 文件）；
   没登录也能只看不发，输入条会明确提示。
 - **房间状态**：标题、分区、主播、粉丝数、人气值，以及官方高能榜的**真实在线人数**
@@ -67,8 +69,22 @@ cargo run -p makuhime-server -- --room 7734200 --open
 ### 打包
 
 ```bash
-npm run tauri:build      # 产出 deb / AppImage 到 src-tauri/target/release/bundle
+npm run tauri:build                    # 产出 deb / AppImage 到 target/release/bundle
+npx tauri build --no-bundle            # 只编译 release 二进制（前端已内嵌）
+npm run package                        # 打「解压即用」的 tar.gz（桌面端 + 本地服务 + dist）
 ```
+
+本地实测两种 Linux 产物都能直接构建：
+
+| 产物 | 大小 | 内容 |
+|------|------|------|
+| `target/release/bundle/deb/maku-hime_0.1.0_amd64.deb` | 5.2 MB | `/usr/bin/maku-hime`、`/usr/lib/maku-hime/dist`（OBS/面板静态资源）、desktop 文件、32/128/256 图标 |
+| `target/release/bundle/appimage/maku-hime_0.1.0_amd64.AppImage` | 104 MB | 自带 WebKitGTK 依赖，`chmod +x` 直接运行 |
+| `dist-packages/maku-hime-0.1.0-linux-x86_64.tar.gz` | 8.2 MB | 桌面端 + `maku-hime-server` + `dist/`，解压即用 |
+
+AppImage 首次构建会下载 linuxdeploy / appimagetool（缓存在 `~/.cache/tauri`）。
+
+Arch 这类没有 dpkg 的发行版直接装 deb 不方便，用 `npm run package` 解压即用的包即可。
 
 ## 使用
 
@@ -81,7 +97,9 @@ npm run tauri:build      # 产出 deb / AppImage 到 src-tauri/target/release/bu
 
 - 面板右上角「悬浮窗」或托盘菜单打开；
 - 启动时想直接开悬浮窗：`cargo run -p maku-hime -- --overlay`（或 `MAKUHIME_OPEN_OVERLAY=1`）；
-- 解锁后可以拖动移动、右下角拖拽缩放，位置与尺寸会保存；
+- 解锁后可以拖动移动、右下角拖拽缩放，**位置与尺寸会写回 `config.toml` 并在下次启动时恢复**
+  （拖动时做 400ms 防抖，不会频繁写盘）；
+- 应用是**单实例**的：重复启动只会聚焦已运行的窗口；`maku-hime --overlay` 会顺带把悬浮窗打开；
 - 锁定 = 点击穿透，鼠标会直接穿过悬浮窗点到下面的窗口。锁定状态下悬浮窗自己的按钮点不到，
   解锁入口在**主窗口的「悬浮窗」按钮**或**托盘菜单**里；
 - Wayland 下穿透由合成器决定（niri / Hyprland 较新版本支持），不生效时它就是普通置顶窗。

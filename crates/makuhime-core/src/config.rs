@@ -98,6 +98,16 @@ pub struct OverlayConfig {
     pub locked: bool,
 }
 
+impl OverlayConfig {
+    /// 把窗口几何写回配置（拖动/缩放后调用），宽高做下限保护。
+    pub fn apply_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        self.x = x;
+        self.y = y;
+        self.width = width.max(240);
+        self.height = height.max(160);
+    }
+}
+
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
@@ -346,6 +356,19 @@ mod tests {
         std::fs::write(&path, "this is not toml [").unwrap();
         let loaded = AppConfig::load_from(&path);
         assert_eq!(loaded.server.port, 3939);
+    }
+
+    #[test]
+    fn applies_window_geometry_with_minimum_size() {
+        let mut overlay = OverlayConfig::default();
+        overlay.apply_geometry(120, 64, 500, 720);
+        assert_eq!((overlay.x, overlay.y), (120, 64));
+        assert_eq!((overlay.width, overlay.height), (500, 720));
+
+        // 低于下限的尺寸会被夹住，避免保存成 0×0 的隐形窗口
+        overlay.apply_geometry(-10, -20, 10, 10);
+        assert_eq!((overlay.x, overlay.y), (-10, -20));
+        assert_eq!((overlay.width, overlay.height), (240, 160));
     }
 
     #[test]

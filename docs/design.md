@@ -90,6 +90,11 @@ LiveEvent::Popularity / Watched / OnlineRank / LiveStatus / RoomUpdate / Notice 
 ## 4. 悬浮窗与穿透
 
 - 桌面端用一个无边框、透明、置顶的 Tauri 窗口加载 `obs.html?surface=overlay`；
+- **单实例**（`tauri-plugin-single-instance`）：第二次启动只聚焦已有窗口，
+  带 `--overlay` 时顺便打开悬浮窗，避免两个进程各占端口、各订阅一份弹幕；
+- **几何持久化**：窗口的 `Moved` / `Resized` 事件先更新壳里的几何状态，
+  停止变化 400ms 后由引擎统一写回 `config.toml`（唯一写盘入口），
+  这样拖动过程中不会把磁盘写爆；平铺合成器下位置由合成器决定，落盘的是它实际给的几何；
 - 服务端对 HTTP/WS 统一做来源校验（`origin.rs`）：Host 必须是回环地址（否则拒绝，防 DNS rebinding），
   带 Origin 的请求必须是本机页面 / Tauri 壳 / 与 Host 同源；
   穿透通过 `set_ignore_cursor_events`（GTK 的输入区域）；Wayland 原生窗口下由合成器决定是否采纳，
