@@ -121,6 +121,7 @@ impl HttpClient {
             builder = builder.header(reqwest::header::REFERER, referer);
         }
         let response = builder.send().await?;
+        let status = response.status();
         let headers: Vec<String> = response
             .headers()
             .get_all(reqwest::header::SET_COOKIE)
@@ -128,6 +129,10 @@ impl HttpClient {
             .filter_map(|value| value.to_str().ok().map(str::to_string))
             .collect();
         let text = response.text().await?;
+        if !status.is_success() {
+            // B 站风控会直接返回 412 + HTML，这里给出原始片段而不是 serde 报错
+            return Err(Error::other(format!("HTTP {status}: {}", snippet(&text))));
+        }
         Ok((serde_json::from_str(&text)?, headers))
     }
 
@@ -142,7 +147,11 @@ impl HttpClient {
             .form(form)
             .send()
             .await?;
+        let status = response.status();
         let text = response.text().await?;
+        if !status.is_success() {
+            return Err(Error::other(format!("HTTP {status}: {}", snippet(&text))));
+        }
         Ok(serde_json::from_str(&text)?)
     }
 
@@ -171,10 +180,10 @@ impl HttpClient {
     async fn wbi_mixin(&self) -> Result<String> {
         {
             let session = self.session.lock().unwrap();
-            if let Some(keys) = &session.wbi {
-                if keys.fetched_at.elapsed() < Duration::from_secs(3600) {
-                    return Ok(keys.mixin.clone());
-                }
+            if let Some(keys) = &session.wbi
+                && keys.fetched_at.elapsed() < Duration::from_secs(3600)
+            {
+                return Ok(keys.mixin.clone());
             }
         }
         let value = self

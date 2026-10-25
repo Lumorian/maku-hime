@@ -82,7 +82,8 @@ pub struct Snapshot {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ServerEvent {
-    Event(Event),
+    // 事件本身较大（带昵称/头像/勋章），装箱避免整个枚举按最大变体分配
+    Event(Box<Event>),
     Snapshot(Box<Snapshot>),
     Speak(TtsJob),
     Notice { level: String, message: String },
@@ -109,6 +110,12 @@ struct Inner {
     credentials: RwLock<Option<Credentials>>,
     seen: Mutex<HashMap<u64, SeenIds>>,
     last_info_refresh: Mutex<HashMap<u64, i64>>,
+    /// 刚发出、等待 B 站回推的弹幕文本，用于去掉重复回显
+    pending_echoes: std::sync::Mutex<HashMap<u64, VecDeque<(String, i64)>>>,
+    /// 本地回显 id 的自增序号
+    echo_seq: std::sync::atomic::AtomicU64,
+    /// 串行化「改配置 + 落盘」，避免多个入口互相覆盖
+    config_io: tokio::sync::Mutex<()>,
     started_at: i64,
     server_url: std::sync::Mutex<String>,
 }
@@ -168,6 +175,9 @@ impl Engine {
                 credentials: RwLock::new(credentials),
                 seen: Mutex::new(HashMap::new()),
                 last_info_refresh: Mutex::new(HashMap::new()),
+                pending_echoes: std::sync::Mutex::new(HashMap::new()),
+                echo_seq: std::sync::atomic::AtomicU64::new(1),
+                config_io: tokio::sync::Mutex::new(()),
                 started_at: now_millis(),
                 server_url: std::sync::Mutex::new(String::new()),
             }),
@@ -245,29 +255,24 @@ impl Engine {
         let info = room::fetch_room_info(&self.inner.http, rid).await?;
         let room_id = info.room_id;
 
-        {
-            let rooms = self.inner.rooms.read().await;
+        // 检查与插入必须在同一把写锁里，否则并发调用会各 spawn 一套任务
+        let state = {
+            let mut rooms = self.inner.rooms.write().await;
             if let Some(existing) = rooms.get(&room_id) {
                 return Ok(existing.clone());
             }
-        }
+            let state = RoomState::new(info);
+            rooms.insert(room_id, state.clone());
+            state
+        };
 
-        let state = RoomState::new(info);
-        self.inner
-            .rooms
-            .write()
-            .await
-            .insert(room_id, state.clone());
         self.spawn_room_tasks(room_id).await;
-        {
-            let mut cfg = self.inner.config.write().await;
+        self.mutate_config(|cfg| {
             if !cfg.rooms.contains(&room_id) {
                 cfg.rooms.push(room_id);
-                if let Err(err) = cfg.save() {
-                    tracing::warn!(%err, "保存订阅房间失败");
-                }
             }
-        }
+        })
+        .await;
         self.broadcast_snapshot().await;
         // 立刻拉一次在线人数，别等 30s
         self.refresh_stats(room_id).await;
@@ -279,14 +284,15 @@ impl Engine {
         if let Some(cancel) = self.inner.cancels.lock().await.remove(&room_id) {
             cancel.cancel();
         }
-        {
-            let mut cfg = self.inner.config.write().await;
-            cfg.rooms.retain(|id| *id != room_id);
-            if let Err(err) = cfg.save() {
-                tracing::warn!(%err, "保存订阅房间失败");
-            }
-        }
+        // 退订后把房间相关的内存状态一并清掉，避免反复加退房间时线性增长
+        self.inner.seen.lock().await.remove(&room_id);
+        self.inner.last_info_refresh.lock().await.remove(&room_id);
+        self.inner.pending_echoes.lock().unwrap().remove(&room_id);
+        self.inner.history.forget_room(room_id);
+
         if existed {
+            self.mutate_config(|cfg| cfg.rooms.retain(|id| *id != room_id))
+                .await;
             self.broadcast_snapshot().await;
         }
         existed
@@ -298,7 +304,7 @@ impl Engine {
         {
             let mut rooms = self.inner.rooms.write().await;
             let Some(state) = rooms.get_mut(&room_id) else {
-                return Err(Error::other("该房间未被订阅"));
+                return Err(Error::NotFound("该房间未被订阅".into()));
             };
             state.info = info;
             state.status = state.info.status_text().to_string();
@@ -310,7 +316,10 @@ impl Engine {
             .insert(room_id, now_millis());
         self.refresh_stats(room_id).await;
         self.broadcast_snapshot().await;
-        Ok(self.room_state(room_id).await.expect("刚插入"))
+        // 期间可能被 remove_room 删掉，这里不再 expect
+        self.room_state(room_id)
+            .await
+            .ok_or_else(|| Error::NotFound("该房间已被取消订阅".into()))
     }
 
     pub async fn room_state(&self, room_id: u64) -> Option<RoomState> {
@@ -319,11 +328,13 @@ impl Engine {
 
     async fn spawn_room_tasks(&self, room_id: u64) {
         let cancel = CancellationToken::new();
-        self.inner
-            .cancels
-            .lock()
-            .await
-            .insert(room_id, cancel.clone());
+        {
+            let mut cancels = self.inner.cancels.lock().await;
+            // 若已有旧任务（重复订阅/竞态），先取消，避免同一房间跑两套连接
+            if let Some(previous) = cancels.insert(room_id, cancel.clone()) {
+                previous.cancel();
+            }
+        }
 
         let danmaku_config = self.inner.config.read().await.danmaku.clone();
         let client = DanmakuClient::new(room_id, self.inner.http.clone(), &danmaku_config);
@@ -402,7 +413,32 @@ impl Engine {
         }
     }
 
+    /// 收到一条外部事件：先做「自己发的弹幕回推」去重，再走正常发布流程。
     async fn handle_event(&self, event: Event) {
+        if self.is_echo_of_own_message(&event).await {
+            return;
+        }
+        self.publish_event(event).await;
+    }
+
+    /// B 站会把我们刚发的弹幕再推回来一条；本地已经回显过，这条要丢掉，
+    /// 否则墙上会出现两条一模一样的。
+    async fn is_echo_of_own_message(&self, event: &Event) -> bool {
+        let LiveEvent::Chat { user, text, .. } = &event.body else {
+            return false;
+        };
+        let our_uid = self.inner.login.read().await.uid;
+        if our_uid == 0 || user.uid != our_uid {
+            return false;
+        }
+        let mut pending = self.inner.pending_echoes.lock().unwrap();
+        let Some(queue) = pending.get_mut(&event.room_id) else {
+            return false;
+        };
+        take_pending_echo(queue, text, now_millis())
+    }
+
+    async fn publish_event(&self, event: Event) {
         let room_id = event.room_id;
         if !self.mark_seen(room_id, &event.id).await {
             return;
@@ -426,11 +462,9 @@ impl Engine {
                     state.info.live_status = *live_status;
                     state.status = state.info.status_text().to_string();
                 }
-                LiveEvent::RoomUpdate { fans, .. } => {
-                    if let Some(fans) = fans {
-                        state.info.attention = *fans;
-                    }
-                }
+                LiveEvent::RoomUpdate {
+                    fans: Some(fans), ..
+                } => state.info.attention = *fans,
                 _ => {}
             }
         })
@@ -440,7 +474,7 @@ impl Engine {
             self.inner.history.append(&event);
         }
         self.maybe_speak(&event).await;
-        let _ = self.inner.events.send(ServerEvent::Event(event));
+        let _ = self.inner.events.send(ServerEvent::Event(Box::new(event)));
 
         if live_status_change.is_some() {
             self.refresh_stats(room_id).await;
@@ -537,23 +571,21 @@ impl Engine {
                 .map(|ts| now_millis() - ts > 300_000)
                 .unwrap_or(true)
         };
-        if need_info {
-            if let Ok(info) = room::fetch_room_info(&self.inner.http, room_id).await {
-                let mut rooms = self.inner.rooms.write().await;
-                if let Some(state) = rooms.get_mut(&room_id) {
-                    if state.info != info {
-                        changed = true;
-                    }
-                    state.info = info;
-                    state.status = state.info.status_text().to_string();
+        if need_info && let Ok(info) = room::fetch_room_info(&self.inner.http, room_id).await {
+            let mut rooms = self.inner.rooms.write().await;
+            if let Some(state) = rooms.get_mut(&room_id) {
+                if state.info != info {
+                    changed = true;
                 }
-                drop(rooms);
-                self.inner
-                    .last_info_refresh
-                    .lock()
-                    .await
-                    .insert(room_id, now_millis());
+                state.info = info;
+                state.status = state.info.status_text().to_string();
             }
+            drop(rooms);
+            self.inner
+                .last_info_refresh
+                .lock()
+                .await
+                .insert(room_id, now_millis());
         }
         changed
     }
@@ -572,9 +604,15 @@ impl Engine {
         let send_config = self.inner.config.read().await.send.clone();
         sender::send_danmaku(&self.inner.http, &credentials, room_id, text, &send_config).await?;
 
-        // 本地回显：B 站会把这条弹幕推回 WS，前端按 id 去重
+        // 本地先回显一条；B 站随后推回的同一条由 is_echo_of_own_message 丢弃。
+        // id 用自增序号，避免同一毫秒连发两条时撞 id 被 mark_seen 吞掉。
+        let seq = self
+            .inner
+            .echo_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.remember_echo(room_id, text.trim());
         let event = Event {
-            id: format!("local-{}", now_millis()),
+            id: format!("local-{}-{}", now_millis(), seq),
             ts: now_millis(),
             room_id,
             body: LiveEvent::Chat {
@@ -588,8 +626,20 @@ impl Engine {
                 emoticon: None,
             },
         };
-        self.handle_event(event).await;
+        self.publish_event(event).await;
         Ok(())
+    }
+
+    /// 记下「刚发出去、等待确认」的弹幕，供回推去重用。
+    fn remember_echo(&self, room_id: u64, text: &str) {
+        let mut pending = self.inner.pending_echoes.lock().unwrap();
+        let queue = pending.entry(room_id).or_default();
+        let now = now_millis();
+        queue.retain(|(_, ts)| now - ts < ECHO_TTL_MS);
+        queue.push_back((text.to_string(), now));
+        if queue.len() > 16 {
+            queue.pop_front();
+        }
     }
 
     // ---------------------------------------------------------------- 登录
@@ -642,6 +692,8 @@ impl Engine {
 
     pub async fn logout(&self) -> Result<()> {
         Credentials::clear()?;
+        // 别让 HTTP 客户端继续带着旧 SESSDATA 去请求 B 站
+        self.inner.http.set_cookie("");
         *self.inner.credentials.write().await = None;
         *self.inner.login.write().await = LoginState::default();
         self.broadcast_snapshot().await;
@@ -652,10 +704,24 @@ impl Engine {
 
     pub async fn update_config(&self, config: AppConfig) -> Result<AppConfig> {
         let config = config.sanitized();
-        config.save()?;
-        *self.inner.config.write().await = config.clone();
+        let saved = self.mutate_config(|current| *current = config).await;
         self.broadcast_snapshot().await;
-        Ok(config)
+        Ok(saved)
+    }
+
+    /// 串行化「修改配置 + 落盘」。所有改配置的入口都走这里，
+    /// 否则 add_room / remove_room / update_config 并发时会互相覆盖。
+    async fn mutate_config(&self, mutate: impl FnOnce(&mut AppConfig)) -> AppConfig {
+        let _io = self.inner.config_io.lock().await;
+        let snapshot = {
+            let mut config = self.inner.config.write().await;
+            mutate(&mut config);
+            config.clone()
+        };
+        if let Err(err) = snapshot.save() {
+            tracing::warn!(%err, "保存配置失败");
+        }
+        snapshot
     }
 
     // ---------------------------------------------------------------- 历史
@@ -706,18 +772,53 @@ impl Engine {
     }
 }
 
+/// 本地回显与 B 站回推之间的匹配窗口
+const ECHO_TTL_MS: i64 = 20_000;
+
+/// 在待确认队列里找一条与 text 匹配的回显并消费掉。
+fn take_pending_echo(queue: &mut VecDeque<(String, i64)>, text: &str, now: i64) -> bool {
+    queue.retain(|(_, ts)| now - ts < ECHO_TTL_MS);
+    let target = text.trim();
+    if let Some(index) = queue.iter().position(|(item, _)| item == target) {
+        queue.remove(index);
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn room_state_status_text_follows_live_status() {
-        let mut info = RoomInfo::default();
-        info.live_status = 1;
-        let state = RoomState::new(info.clone());
-        assert_eq!(state.status, "直播中");
-        info.live_status = 0;
-        assert_eq!(RoomState::new(info).status, "未开播");
+        let live = RoomInfo {
+            live_status: 1,
+            ..Default::default()
+        };
+        assert_eq!(RoomState::new(live).status, "直播中");
+        assert_eq!(RoomState::new(RoomInfo::default()).status, "未开播");
+    }
+
+    #[test]
+    fn echo_queue_matches_exactly_once() {
+        let mut queue = VecDeque::new();
+        queue.push_back(("你好".to_string(), 1_000));
+        assert!(take_pending_echo(&mut queue, " 你好 ", 1_100));
+        assert!(queue.is_empty(), "匹配过的回显应被消费掉");
+        assert!(!take_pending_echo(&mut queue, "你好", 1_200));
+    }
+
+    #[test]
+    fn echo_queue_expires_old_entries() {
+        let mut queue = VecDeque::new();
+        queue.push_back(("过期了".to_string(), 1_000));
+        assert!(!take_pending_echo(
+            &mut queue,
+            "过期了",
+            1_000 + ECHO_TTL_MS + 1
+        ));
+        assert!(queue.is_empty(), "过期条目应被清理");
     }
 
     #[test]

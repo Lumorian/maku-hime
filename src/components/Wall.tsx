@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store";
 import type { EnterKind, Event, GuardLevel, Medal, UiConfig, User } from "../types";
 import { cn, formatPrice, GUARD_LABEL } from "../util";
@@ -57,22 +57,24 @@ export function Wall({ roomId, config, className, bare, showMeta }: WallProps) {
   );
 
   const rows = visible.slice(-config.max_rows);
+  // 用「最后一条的 id」而不是数组长度：到了 max_rows 之后长度恒定，
+  // 只看长度会导致自动跟随静默失效（新弹幕来了却不再滚动）。
+  const lastKey = rows.length > 0 ? rows[rows.length - 1].id : null;
 
-  // 新弹幕到达：跟随中就滚到底，否则累计提示数量
+  // 新弹幕到达：跟随中就贴底，否则累计「N 条新弹幕」
   useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
     if (following) {
       container.scrollTop = container.scrollHeight;
       setPending(0);
-    } else {
+    } else if (lastKey !== null) {
       setPending((value) => value + 1);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length, following]);
+  }, [lastKey, following, config.max_rows]);
 
   // 首次进入 / 切换房间时贴底
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
@@ -299,11 +301,6 @@ export function MedalBadge({ medal }: { medal: Medal }) {
 function clock(ts: number): string {
   const date = new Date(ts);
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-/** 订阅事件数量变化，用于标题栏的「最近 N 条」。 */
-export function useEventCount(roomId: number): number {
-  return useStore((state) => (state.events[roomId] ?? EMPTY_EVENTS).length);
 }
 
 export type { GuardLevel };

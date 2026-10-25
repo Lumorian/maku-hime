@@ -2,29 +2,40 @@
 //!
 //! 文件位置：~/.local/share/maku-hime/history/{room_id}.jsonl
 //! 每行一个 [Event] 的 JSON，方便直接用 jq / 脚本二次处理。
+//!
+//! 写盘放在独立线程里：弹幕高峰时每条消息都同步 write+flush 会阻塞 tokio worker，
+//! 这里改成「内存里立刻可见 + 通过 channel 交给写线程批量 flush」。
 
 use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
+use std::time::Duration;
 
 use chrono::{DateTime, Local, TimeZone};
 
 use crate::error::Result;
 use crate::model::{Event, LiveEvent};
 
-struct RoomLog {
+/// 写线程收到的操作。
+enum WriteOp {
+    Line { room_id: u64, line: String },
+    Clear { room_id: u64, ack: Sender<()> },
+    Forget { room_id: u64 },
+    Flush(Sender<()>),
+}
+
+struct RoomMemory {
     events: VecDeque<Event>,
-    writer: Option<BufWriter<std::fs::File>>,
     loaded: bool,
 }
 
-impl RoomLog {
+impl RoomMemory {
     fn new() -> Self {
         Self {
             events: VecDeque::new(),
-            writer: None,
             loaded: false,
         }
     }
@@ -33,15 +44,18 @@ impl RoomLog {
 pub struct HistoryStore {
     dir: PathBuf,
     limit: usize,
-    logs: Mutex<HashMap<u64, RoomLog>>,
+    rooms: Mutex<HashMap<u64, RoomMemory>>,
+    writer: Sender<WriteOp>,
 }
 
 impl HistoryStore {
     pub fn new(dir: PathBuf, limit: usize) -> Self {
+        let writer = spawn_writer(dir.clone());
         Self {
             dir,
             limit: limit.max(50),
-            logs: Mutex::new(HashMap::new()),
+            rooms: Mutex::new(HashMap::new()),
+            writer,
         }
     }
 
@@ -54,47 +68,40 @@ impl HistoryStore {
     }
 
     pub fn append(&self, event: &Event) {
-        let mut logs = self.logs.lock().unwrap();
         let limit = self.limit;
-        let dir = self.dir.clone();
-        let log = logs.entry(event.room_id).or_insert_with(RoomLog::new);
-        if !log.loaded {
-            log.events = load_tail(&dir.join(format!("{}.jsonl", event.room_id)), limit);
-            log.loaded = true;
-        }
-        log.events.push_back(event.clone());
-        while log.events.len() > limit {
-            log.events.pop_front();
-        }
-
-        if log.writer.is_none() {
-            if std::fs::create_dir_all(&dir).is_ok() {
-                let path = dir.join(format!("{}.jsonl", event.room_id));
-                if let Ok(file) = OpenOptions::new().create(true).append(true).open(path) {
-                    log.writer = Some(BufWriter::new(file));
-                }
+        {
+            let mut rooms = self.rooms.lock().unwrap();
+            let room = rooms.entry(event.room_id).or_insert_with(RoomMemory::new);
+            if !room.loaded {
+                let (bytes, truncated) = read_tail_bytes(&self.file_path(event.room_id));
+                room.events = parse_tail(&bytes, truncated, limit);
+                room.loaded = true;
+            }
+            room.events.push_back(event.clone());
+            while room.events.len() > limit {
+                room.events.pop_front();
             }
         }
-        if let Some(writer) = log.writer.as_mut() {
-            if let Ok(line) = serde_json::to_string(event) {
-                let _ = writeln!(writer, "{line}");
-                let _ = writer.flush();
-            }
+        if let Ok(line) = serde_json::to_string(event) {
+            let _ = self.writer.send(WriteOp::Line {
+                room_id: event.room_id,
+                line,
+            });
         }
     }
 
     /// 房间里内存保留的最近若干条。
     pub fn recent(&self, room_id: u64, limit: usize) -> Vec<Event> {
-        let mut logs = self.logs.lock().unwrap();
-        let dir = self.dir.clone();
-        let cap = self.limit;
-        let log = logs.entry(room_id).or_insert_with(RoomLog::new);
-        if !log.loaded {
-            log.events = load_tail(&dir.join(format!("{room_id}.jsonl")), cap);
-            log.loaded = true;
+        let limit = limit.min(self.limit);
+        let mut rooms = self.rooms.lock().unwrap();
+        let room = rooms.entry(room_id).or_insert_with(RoomMemory::new);
+        if !room.loaded {
+            let (bytes, truncated) = read_tail_bytes(&self.file_path(room_id));
+            room.events = parse_tail(&bytes, truncated, self.limit);
+            room.loaded = true;
         }
-        let skip = log.events.len().saturating_sub(limit);
-        log.events.iter().skip(skip).cloned().collect()
+        let skip = room.events.len().saturating_sub(limit);
+        room.events.iter().skip(skip).cloned().collect()
     }
 
     /// 带筛选的查询：kind 过滤 + 关键字（昵称或内容）+ 条数上限。
@@ -114,10 +121,7 @@ impl HistoryStore {
             .filter(|event| kinds.is_empty() || kinds.iter().any(|kind| kind == event.kind()))
             .filter(|event| match &keyword {
                 None => true,
-                Some(needle) => {
-                    let haystack = searchable_text(event).to_lowercase();
-                    haystack.contains(needle)
-                }
+                Some(needle) => searchable_text(event).to_lowercase().contains(needle),
             })
             .collect();
         if out.len() > limit {
@@ -128,6 +132,7 @@ impl HistoryStore {
 
     /// 导出整个房间的落盘历史。
     pub fn export(&self, room_id: u64, format: ExportFormat) -> Result<String> {
+        self.flush();
         let events = self.read_all(room_id)?;
         Ok(match format {
             ExportFormat::Json => {
@@ -147,7 +152,17 @@ impl HistoryStore {
         format!("maku-hime-{room_id}-{stamp}.{}", format.extension())
     }
 
+    /// 把写线程里缓冲的内容刷到磁盘（导出、测试用）。
+    pub fn flush(&self) {
+        let (tx, rx) = channel();
+        if self.writer.send(WriteOp::Flush(tx)).is_ok() {
+            let _ = rx.recv_timeout(Duration::from_secs(3));
+        }
+    }
+
     fn read_all(&self, room_id: u64) -> Result<Vec<Event>> {
+        // 防止一个跑了很久的房间把内存吃满：最多读最近 MAX_EXPORT 条
+        const MAX_EXPORT: usize = 500_000;
         let path = self.file_path(room_id);
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
@@ -161,23 +176,25 @@ impl HistoryStore {
             }
             if let Ok(event) = serde_json::from_str::<Event>(&line) {
                 events.push(event);
+                if events.len() >= MAX_EXPORT {
+                    break;
+                }
             }
         }
         Ok(events)
     }
 
+    /// 退订房间时丢掉内存缓冲与打开的文件句柄（落盘文件保留）。
+    pub fn forget_room(&self, room_id: u64) {
+        self.rooms.lock().unwrap().remove(&room_id);
+        let _ = self.writer.send(WriteOp::Forget { room_id });
+    }
+
     pub fn clear(&self, room_id: u64) -> Result<()> {
-        {
-            let mut logs = self.logs.lock().unwrap();
-            if let Some(log) = logs.get_mut(&room_id) {
-                log.events.clear();
-                log.writer = None;
-            }
-        }
-        let path = self.file_path(room_id);
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
+        self.rooms.lock().unwrap().remove(&room_id);
+        let (tx, rx) = channel();
+        let _ = self.writer.send(WriteOp::Clear { room_id, ack: tx });
+        let _ = rx.recv_timeout(Duration::from_secs(3));
         Ok(())
     }
 
@@ -187,6 +204,108 @@ impl HistoryStore {
             .map(|meta| meta.len())
             .unwrap_or(0)
     }
+}
+
+/// 写线程：串行持有各房间的文件句柄，空闲 500ms 刷一次盘。
+fn spawn_writer(dir: PathBuf) -> Sender<WriteOp> {
+    let (tx, rx) = channel::<WriteOp>();
+    let thread = std::thread::Builder::new()
+        .name("makuhime-history".into())
+        .spawn(move || {
+            let mut writers: HashMap<u64, BufWriter<std::fs::File>> = HashMap::new();
+            let flush_all = |writers: &mut HashMap<u64, BufWriter<std::fs::File>>| {
+                for writer in writers.values_mut() {
+                    let _ = writer.flush();
+                }
+            };
+            loop {
+                match rx.recv_timeout(Duration::from_millis(500)) {
+                    Ok(WriteOp::Line { room_id, line }) => {
+                        let writer = writers.entry(room_id).or_insert_with(|| {
+                            let path = dir.join(format!("{room_id}.jsonl"));
+                            if let Some(parent) = path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            match OpenOptions::new().create(true).append(true).open(path) {
+                                Ok(file) => BufWriter::new(file),
+                                Err(_) => {
+                                    BufWriter::new(std::fs::File::create("/dev/null").unwrap())
+                                }
+                            }
+                        });
+                        let _ = writeln!(writer, "{line}");
+                    }
+                    Ok(WriteOp::Clear { room_id, ack }) => {
+                        if let Some(mut writer) = writers.remove(&room_id) {
+                            let _ = writer.flush();
+                        }
+                        let _ = std::fs::remove_file(dir.join(format!("{room_id}.jsonl")));
+                        let _ = ack.send(());
+                    }
+                    Ok(WriteOp::Forget { room_id }) => {
+                        if let Some(mut writer) = writers.remove(&room_id) {
+                            let _ = writer.flush();
+                        }
+                    }
+                    Ok(WriteOp::Flush(ack)) => {
+                        flush_all(&mut writers);
+                        let _ = ack.send(());
+                    }
+                    Err(RecvTimeoutError::Timeout) => flush_all(&mut writers),
+                    Err(RecvTimeoutError::Disconnected) => {
+                        flush_all(&mut writers);
+                        return;
+                    }
+                }
+            }
+        });
+    if let Err(err) = thread {
+        tracing::error!(%err, "历史写线程启动失败，历史将不会落盘");
+    }
+    tx
+}
+
+/// 读取文件末尾一段字节（最多约 1MB）。
+/// 返回 (字节, 是否从文件中途开始)——中途开始说明第一行可能被截断。
+fn read_tail_bytes(path: &Path) -> (Vec<u8>, bool) {
+    let mut out = Vec::new();
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return (out, false);
+    };
+    let Ok(meta) = file.metadata() else {
+        return (out, false);
+    };
+    const TAIL_BYTES: u64 = 1 << 20;
+    let start = meta.len().saturating_sub(TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return (out, false);
+    }
+    if file.read_to_end(&mut out).is_err() {
+        return (Vec::new(), start > 0);
+    }
+    (out, start > 0)
+}
+
+/// 解析行式 JSONL 的尾部。
+/// skip_partial_line=true 时丢掉第一行（它可能从多字节 UTF-8 字符中间被切开）。
+fn parse_tail(bytes: &[u8], skip_partial_line: bool, limit: usize) -> VecDeque<Event> {
+    let bytes = if skip_partial_line {
+        match bytes.iter().position(|byte| *byte == b'\n') {
+            Some(index) => &bytes[index + 1..],
+            None => &[],
+        }
+    } else {
+        bytes
+    };
+    // from_utf8_lossy：即使切在多字节字符中间也不会报错，最坏只是丢掉半行
+    let text = String::from_utf8_lossy(bytes);
+    let mut out = VecDeque::new();
+    for line in text.lines().rev().take(limit) {
+        if let Ok(event) = serde_json::from_str::<Event>(line) {
+            out.push_front(event);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,36 +339,6 @@ impl ExportFormat {
             ExportFormat::Csv => "text/csv; charset=utf-8",
         }
     }
-}
-
-fn load_tail(path: &Path, limit: usize) -> VecDeque<Event> {
-    let mut out = VecDeque::new();
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return out;
-    };
-    let Ok(meta) = file.metadata() else {
-        return out;
-    };
-    const TAIL_BYTES: u64 = 1 << 20; // 只读文件最后 1MB，足够覆盖 limit 条
-    let start = meta.len().saturating_sub(TAIL_BYTES);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return out;
-    }
-    let mut buffer = String::new();
-    if file.read_to_string(&mut buffer).is_err() {
-        return out;
-    }
-    let mut lines: Vec<&str> = buffer.lines().collect();
-    if start > 0 && !lines.is_empty() {
-        // 第一行多半是被截断的半行，丢掉
-        lines.remove(0);
-    }
-    for line in lines.iter().rev().take(limit) {
-        if let Ok(event) = serde_json::from_str::<Event>(line) {
-            out.push_front(event);
-        }
-    }
-    out
 }
 
 fn searchable_text(event: &Event) -> String {
@@ -469,8 +558,7 @@ mod tests {
         assert_eq!(recent[1].kind(), "chat");
         let filtered = store.query(1, &["chat".into()], Some("第二"), 10);
         assert_eq!(filtered.len(), 1);
-        let none = store.query(1, &[], Some("不存在"), 10);
-        assert!(none.is_empty());
+        assert!(store.query(1, &[], Some("不存在"), 10).is_empty());
     }
 
     #[test]
@@ -479,7 +567,7 @@ mod tests {
         {
             let store = HistoryStore::new(dir.clone(), 100);
             store.append(&chat_event(42, "落盘一条"));
-            let gift = Event {
+            store.append(&Event {
                 id: "gift-1".into(),
                 ts: 1_792_951_573_000,
                 room_id: 42,
@@ -497,15 +585,46 @@ mod tests {
                         ..Default::default()
                     },
                 },
-            };
-            store.append(&gift);
+            });
+            store.flush();
         }
         // 新实例模拟重启：内存为空，但能读回落盘内容
-        let store = HistoryStore::new(dir.clone(), 100);
+        let store = HistoryStore::new(dir, 100);
         let recent = store.recent(42, 10);
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].kind(), "chat");
         assert!(store.file_size(42) > 0);
+    }
+
+    #[test]
+    fn parses_tail_from_truncated_multibyte_start() {
+        let line = serde_json::to_string(&chat_event(5, "中文内容")).unwrap();
+        let mut bytes = vec![0xE4, 0xB8]; // 半个「中」字，模拟 1MB 边界切在多字节中间
+        bytes.push(b'\n');
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        let events = parse_tail(&bytes, true, 10);
+        assert_eq!(events.len(), 1, "应该只解析出后半段完整的行");
+        assert_eq!(events[0].kind(), "chat");
+    }
+
+    #[test]
+    fn parse_tail_handles_invalid_utf8() {
+        let mut bytes = b"not-json-line\n".to_vec();
+        bytes.extend_from_slice(&[0xFF, 0xFE, 0x0A]);
+        let events = parse_tail(&bytes, false, 10);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn forget_room_drops_memory_but_keeps_file() {
+        let dir = temp_dir("forget");
+        let store = HistoryStore::new(dir, 100);
+        store.append(&chat_event(77, "保留文件"));
+        store.flush();
+        store.forget_room(77);
+        assert_eq!(store.recent(77, 10).len(), 1, "重新从磁盘恢复");
+        assert!(store.file_size(77) > 0);
     }
 
     #[test]

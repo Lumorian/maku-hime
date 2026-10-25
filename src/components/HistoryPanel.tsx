@@ -23,21 +23,28 @@ export function HistoryPanel({ room, onClose }: HistoryPanelProps) {
   const toast = useStore((state) => state.toast);
   const [kinds, setKinds] = useState<string[]>(["chat", "gift", "guard", "super_chat"]);
   const [keyword, setKeyword] = useState("");
+  // 输入时不必每个按键都打一次接口
+  const [debouncedKeyword, setDebouncedKeyword] = useState("");
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedKeyword(keyword), 250);
+    return () => window.clearTimeout(timer);
+  }, [keyword]);
 
   const load = useCallback(async () => {
     if (!room) return;
     setLoading(true);
     try {
-      const list = await api.history(room.room_id, kinds, keyword, 800);
+      const list = await api.history(room.room_id, kinds, debouncedKeyword, 800);
       setEvents(list);
     } catch (error) {
       toast("error", error instanceof Error ? error.message : "读取历史失败");
     } finally {
       setLoading(false);
     }
-  }, [room, kinds, keyword, toast]);
+  }, [room, kinds, debouncedKeyword, toast]);
 
   useEffect(() => {
     void load();

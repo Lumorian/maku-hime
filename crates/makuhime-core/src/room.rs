@@ -80,10 +80,10 @@ pub async fn fetch_room_info(http: &HttpClient, rid: u64) -> Result<RoomInfo> {
     let base_url = format!(
         "https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo?req_biz=web_room_componet&room_ids={room_id}&from=0"
     );
-    if let Ok(value) = http.api(&base_url).await {
-        if let Some(info) = parse_room_base(&value, room_id) {
-            return Ok(info);
-        }
+    if let Ok(value) = http.api(&base_url).await
+        && let Some(info) = parse_room_base(&value, room_id)
+    {
+        return Ok(info);
     }
     fetch_room_info_legacy(http, room_id).await
 }

@@ -47,13 +47,16 @@
 .wall-inner {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  /* 用 margin-top:auto 做「内容不足时贴底」，不要用 justify-content:flex-end：
+     后者会把溢出内容顶到可视区上方，scrollHeight 不增长，历史就永远滚不回去。 */
+  flex: 0 0 auto;
   min-height: 100%;
   margin-top: auto;
   width: 100%;
 }
 
 .row {
+  flex: 0 0 auto;
   padding: 5px;
   border-radius: 6px;
   line-height: 20px;

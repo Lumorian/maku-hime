@@ -4,10 +4,10 @@ import type { Event, GuardLevel, RoomState } from "./types";
 export function formatCount(value: number | null | undefined): string {
   const number = Math.max(0, Math.floor(value ?? 0));
   if (number < 10_000) return String(number);
-  if (number >= 100_000_000) {
-    return `${trimZero((number / 100_000_000).toFixed(1))}亿`;
-  }
-  return `${trimZero((number / 10_000).toFixed(1))}万`;
+  // 按 B 站习惯向下截断到一位小数：999999 → 99.9万（四舍五入会变成 100万）
+  const unit = number >= 100_000_000 ? 100_000_000 : 10_000;
+  const scaled = Math.floor((number / unit) * 10) / 10;
+  return `${trimZero(scaled.toFixed(1))}${unit === 100_000_000 ? "亿" : "万"}`;
 }
 
 function trimZero(text: string): string {

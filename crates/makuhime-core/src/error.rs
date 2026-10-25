@@ -31,6 +31,9 @@ pub enum Error {
     #[error("未登录：B 站账号凭据缺失或已过期")]
     NotLoggedIn,
 
+    #[error("{0}")]
+    NotFound(String),
+
     #[error("发送弹幕失败 [{code}]: {message}")]
     Send { code: i64, message: String },
 

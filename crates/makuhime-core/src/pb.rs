@@ -105,10 +105,10 @@ impl<'a> Reader<'a> {
 pub fn varint(buf: &[u8], field: u32) -> Option<u64> {
     let mut reader = Reader::new(buf);
     while let Some((number, value)) = reader.next_field() {
-        if number == field {
-            if let Some(v) = value.as_u64() {
-                return Some(v);
-            }
+        if number == field
+            && let Some(v) = value.as_u64()
+        {
+            return Some(v);
         }
     }
     None
@@ -118,17 +118,17 @@ pub fn varint(buf: &[u8], field: u32) -> Option<u64> {
 pub fn string(buf: &[u8], field: u32) -> Option<String> {
     let mut reader = Reader::new(buf);
     while let Some((number, value)) = reader.next_field() {
-        if number == field {
-            if let Some(s) = value.as_str() {
-                return Some(s.to_owned());
-            }
+        if number == field
+            && let Some(s) = value.as_str()
+        {
+            return Some(s.to_owned());
         }
     }
     None
 }
 
 /// 取第一个字段号匹配的嵌套消息字节。
-pub fn message<'a>(buf: &'a [u8], field: u32) -> Option<&'a [u8]> {
+pub fn message(buf: &[u8], field: u32) -> Option<&[u8]> {
     let mut reader = Reader::new(buf);
     while let Some((number, value)) = reader.next_field() {
         if number == field {
@@ -139,14 +139,14 @@ pub fn message<'a>(buf: &'a [u8], field: u32) -> Option<&'a [u8]> {
 }
 
 /// 取字段号匹配的所有嵌套消息。
-pub fn messages<'a>(buf: &'a [u8], field: u32) -> Vec<&'a [u8]> {
+pub fn messages(buf: &[u8], field: u32) -> Vec<&[u8]> {
     let mut reader = Reader::new(buf);
     let mut out = Vec::new();
     while let Some((number, value)) = reader.next_field() {
-        if number == field {
-            if let Some(bytes) = value.as_bytes() {
-                out.push(bytes);
-            }
+        if number == field
+            && let Some(bytes) = value.as_bytes()
+        {
+            out.push(bytes);
         }
     }
     out

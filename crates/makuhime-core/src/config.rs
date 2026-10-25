@@ -313,11 +313,16 @@ mod tests {
 
     #[test]
     fn roundtrips_through_toml() {
-        let mut config = AppConfig::default();
-        config.rooms = vec![689_422, 7_734_200];
-        config.tts.enabled = true;
-        config.tts.provider = TtsProvider::Command;
-        config.tts.command = vec!["spd-say".into(), "{text}".into()];
+        let config = AppConfig {
+            rooms: vec![689_422, 7_734_200],
+            tts: TtsConfig {
+                enabled: true,
+                provider: TtsProvider::Command,
+                command: vec!["spd-say".into(), "{text}".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let dir = std::env::temp_dir().join("makuhime-config-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

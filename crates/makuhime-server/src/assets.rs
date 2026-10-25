@@ -22,13 +22,13 @@ pub fn resolve_web_dir() -> Option<PathBuf> {
         }
     }
     let mut candidates = vec![PathBuf::from("dist")];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("dist"));
-            candidates.push(dir.join("../dist"));
-            candidates.push(dir.join("resources/dist"));
-            candidates.push(dir.join("../Resources/dist"));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join("dist"));
+        candidates.push(dir.join("../dist"));
+        candidates.push(dir.join("resources/dist"));
+        candidates.push(dir.join("../Resources/dist"));
     }
     candidates
         .into_iter()
@@ -76,9 +76,41 @@ pub fn routes(state: SharedState) -> Router<SharedState> {
             }),
         )
         .nest_service("/assets", ServeDir::new(dir.join("assets")))
-        .fallback_service(
-            ServeDir::new(&dir).not_found_service(tower_http::services::ServeFile::new(index)),
+        .fallback({
+            let dir = dir.clone();
+            let index = index.clone();
+            move |uri: Uri| {
+                let dir = dir.clone();
+                let index = index.clone();
+                async move { spa_fallback(dir, index, uri).await }
+            }
+        })
+}
+
+/// SPA fallback：静态文件优先，其次 index.html。
+/// 但拼错的 /api/xxx 必须返回 JSON 404 —— 否则前端会把 HTML 当成功响应。
+async fn spa_fallback(dir: PathBuf, index: PathBuf, uri: Uri) -> Response {
+    let path = uri.path();
+    if path.starts_with("/api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "error": { "code": "not_found", "message": "接口不存在" }
+            })),
         )
+            .into_response();
+    }
+    let relative = path.trim_start_matches('/');
+    if relative.split('/').any(|segment| segment == "..") {
+        return (StatusCode::NOT_FOUND, "非法路径").into_response();
+    }
+    if !relative.is_empty() {
+        let file = dir.join(relative);
+        if file.is_file() {
+            return serve_file(&file).await;
+        }
+    }
+    serve_file(&index).await
 }
 
 async fn serve_file(path: &Path) -> Response {

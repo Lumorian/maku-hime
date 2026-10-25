@@ -79,15 +79,14 @@ fn event_id(cmd: &str, raw: &Value, ts: i64) -> String {
         .get("info")
         .and_then(|i| i.get(2))
         .and_then(|i| i.get(0))
+        && let Some(uid) = value_as_u64(uid)
     {
-        if let Some(uid) = value_as_u64(uid) {
-            return format!("{cmd}-{uid}-{ts}");
-        }
+        return format!("{cmd}-{uid}-{ts}");
     }
-    if let Some(uid) = raw.get("data").and_then(|d| d.get("uid")) {
-        if let Some(uid) = value_as_u64(uid) {
-            return format!("{cmd}-{uid}-{ts}");
-        }
+    if let Some(uid) = raw.get("data").and_then(|d| d.get("uid"))
+        && let Some(uid) = value_as_u64(uid)
+    {
+        return format!("{cmd}-{uid}-{ts}");
     }
     format!("{cmd}-{ts}-{}", raw.to_string().len())
 }
@@ -178,47 +177,46 @@ fn parse_danmu(raw: &Value) -> Option<LiveEvent> {
 
     // 新版用户对象：info[0][15] = {extra, mode, show_player_type, user}
     if let Some(v2) = info
-        .get(0)
+        .first()
         .and_then(|a| a.as_array())
         .and_then(|a| a.get(15))
+        && let Some(v2_user) = v2.get("user")
     {
-        if let Some(v2_user) = v2.get("user") {
-            if let Some(base) = v2_user.get("base") {
-                if let Some(face) = base.get("face").and_then(Value::as_str) {
-                    if !face.is_empty() {
-                        user.face = https(face);
-                    }
-                }
-                if let Some(color) = base
-                    .get("name_color")
-                    .and_then(value_as_i64)
-                    .and_then(color_hex)
-                {
-                    user.name_color = Some(color);
-                }
+        if let Some(base) = v2_user.get("base") {
+            if let Some(face) = base.get("face").and_then(Value::as_str)
+                && !face.is_empty()
+            {
+                user.face = https(face);
             }
-            if let Some(mut medal) = v2_user.get("medal").and_then(parse_medal_v2) {
-                // v2 勋章只有主播 uid，没有昵称；沿用旧字段里的主播昵称
-                if medal.anchor.is_empty() {
-                    if let Some(legacy) = &user.medal {
-                        medal.anchor = legacy.anchor.clone();
-                    }
-                }
-                user.medal = Some(medal);
+            if let Some(color) = base
+                .get("name_color")
+                .and_then(value_as_i64)
+                .and_then(color_hex)
+            {
+                user.name_color = Some(color);
             }
+        }
+        if let Some(mut medal) = v2_user.get("medal").and_then(parse_medal_v2) {
+            // v2 勋章只有主播 uid，没有昵称；沿用旧字段里的主播昵称
+            if medal.anchor.is_empty()
+                && let Some(legacy) = &user.medal
+            {
+                medal.anchor = legacy.anchor.clone();
+            }
+            user.medal = Some(medal);
         }
     }
 
     // 表情大图：info[0][12] == 1 时 info[0][13] 是表情对象
     let is_emoticon = info
-        .get(0)
+        .first()
         .and_then(|a| a.as_array())
         .and_then(|a| a.get(12))
         .and_then(value_as_i64)
         .unwrap_or(0)
         == 1;
     let emoticon = if is_emoticon {
-        info.get(0)
+        info.first()
             .and_then(|a| a.as_array())
             .and_then(|a| a.get(13))
             .and_then(|v| v.get("url"))
@@ -894,7 +892,7 @@ mod tests {
 
     #[test]
     fn every_fixture_line_parses_without_panic() {
-        let parsed: Vec<_> = messages().iter().filter_map(|raw| parse(raw)).collect();
+        let parsed: Vec<_> = messages().iter().filter_map(parse).collect();
         assert!(
             parsed.len() >= 8,
             "fixture 解析出的消息太少: {}",

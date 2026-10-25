@@ -103,9 +103,10 @@ pub async fn qr_poll(http: &HttpClient, qrcode_key: &str) -> Result<QrPoll> {
         0 => {
             let mut credentials = credentials_from_cookies(&cookies);
             if !credentials.is_valid() {
-                // 部分环境下 Cookie 会出现在 Location 里，兜底从 crossDomain 拿
+                // 部分环境下 Cookie 会出现在 crossDomain 跳转地址的 query 里。
+                // 注意那串参数用 & 分隔，不能直接丢给按分号切分的 from_cookie。
                 if let Some(redirect) = data.get("url").and_then(Value::as_str) {
-                    credentials = Credentials::from_cookie(redirect);
+                    credentials = credentials_from_redirect(redirect);
                 }
             }
             if !credentials.is_valid() {
@@ -175,6 +176,27 @@ pub async fn fetch_profile(http: &HttpClient) -> Result<Profile> {
     })
 }
 
+/// 从 crossDomain 跳转地址的 query 里提取凭据。
+/// 形如：https://passport.biligame.com/crossDomain?DedeUserID=1&DedeUserID__ckMd5=x&SESSDATA=y&bili_jct=z
+fn credentials_from_redirect(url: &str) -> Credentials {
+    let query = url.split_once('?').map(|(_, query)| query).unwrap_or(url);
+    let query = query.split('#').next().unwrap_or(query);
+    let mut credentials = Credentials::default();
+    for pair in query.split('&') {
+        let Some((key, value)) = pair.split_once('=') else {
+            continue;
+        };
+        match key {
+            "SESSDATA" => credentials.sessdata = value.to_string(),
+            "bili_jct" => credentials.bili_jct = value.to_string(),
+            "DedeUserID" => credentials.dede_user_id = value.to_string(),
+            _ => {}
+        }
+    }
+    credentials.saved_at = crate::client::now_millis();
+    credentials
+}
+
 fn credentials_from_cookies(cookies: &[String]) -> Credentials {
     let joined = cookies
         .iter()
@@ -195,6 +217,16 @@ fn credentials_from_cookies(cookies: &[String]) -> Credentials {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_credentials_from_cross_domain_redirect() {
+        let url = "https://passport.biligame.com/crossDomain?DedeUserID=12345&DedeUserID__ckMd5=abc&SESSDATA=xyz%2C1799%2Cdef&bili_jct=deadbeef&gourl=https%3A%2F%2Flive.bilibili.com";
+        let creds = credentials_from_redirect(url);
+        assert_eq!(creds.sessdata, "xyz%2C1799%2Cdef");
+        assert_eq!(creds.bili_jct, "deadbeef");
+        assert_eq!(creds.dede_user_id, "12345");
+        assert!(creds.is_valid());
+    }
 
     #[test]
     fn parses_credentials_from_set_cookie_headers() {

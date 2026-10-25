@@ -9,7 +9,7 @@
 //! 队列有上限，弹幕洪水时宁可丢弃也不堆积。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use serde::Serialize;
 use tokio::sync::{RwLock, mpsc};
@@ -28,7 +28,11 @@ pub struct TtsJob {
 
 #[derive(Clone)]
 pub struct TtsHandle {
-    tx: mpsc::Sender<TtsJob>,
+    tx: mpsc::UnboundedSender<TtsJob>,
+    /// 已入队但还没播完的条数
+    pending: Arc<AtomicUsize>,
+    /// 队列上限，跟随配置里的 tts.max_queue
+    limit: Arc<AtomicUsize>,
     dropped: Arc<AtomicU64>,
     backend: Arc<RwLock<String>>,
 }
@@ -42,10 +46,14 @@ impl TtsHandle {
         self.dropped.load(Ordering::Relaxed)
     }
 
-    /// 尝试入队；队列满时丢弃并计数。
+    /// 尝试入队；排队数达到 max_queue 时丢弃并计数，避免弹幕洪水时无限堆积。
     pub fn speak(&self, kind: &str, text: impl Into<String>) -> bool {
         let text = sanitize(&text.into());
         if text.is_empty() {
+            return false;
+        }
+        if self.pending.load(Ordering::Relaxed) >= self.limit.load(Ordering::Relaxed) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         let job = TtsJob {
@@ -53,46 +61,59 @@ impl TtsHandle {
             kind: kind.to_string(),
             backend: String::new(),
         };
-        match self.tx.try_send(job) {
-            Ok(()) => true,
-            Err(_) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                false
-            }
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if self.tx.send(job).is_err() {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
+        true
     }
+}
+
+/// 解析出来的后端：展示名 + 真正的 argv（自动探测时不能只留下程序名）。
+struct ResolvedBackend {
+    label: String,
+    argv: Option<Vec<String>>,
 }
 
 /// 启动播报工作线程；返回句柄与一个接收端，用于把 webview 播报推给前端。
 pub fn spawn(config: Arc<RwLock<AppConfig>>, out: mpsc::UnboundedSender<TtsJob>) -> TtsHandle {
-    let (tx, mut rx) = mpsc::channel::<TtsJob>(64);
+    let (tx, mut rx) = mpsc::unbounded_channel::<TtsJob>();
     let dropped = Arc::new(AtomicU64::new(0));
     let backend = Arc::new(RwLock::new("off".to_string()));
+    let pending = Arc::new(AtomicUsize::new(0));
+    let limit = Arc::new(AtomicUsize::new(32));
+
     let backend_for_task = backend.clone();
+    let pending_for_task = pending.clone();
+    let limit_for_task = limit.clone();
     tokio::spawn(async move {
-        // 启动时探测一次默认后端
+        // 启动时探测一次默认后端与队列上限
         {
             let tts_config = config.read().await.tts.clone();
-            let resolved = resolve_backend(&tts_config).await;
-            *backend_for_task.write().await = resolved;
+            let resolved = resolve(&tts_config).await;
+            *backend_for_task.write().await = resolved.label;
+            limit_for_task.store(tts_config.max_queue.max(1), Ordering::Relaxed);
         }
         while let Some(mut job) = rx.recv().await {
+            pending_for_task.fetch_sub(1, Ordering::Relaxed);
             let cfg = config.read().await.tts.clone();
+            limit_for_task.store(cfg.max_queue.max(1), Ordering::Relaxed);
             if !cfg.enabled {
                 continue;
             }
-            let provider = effective_provider(&cfg);
-            let resolved = resolve_backend(&cfg).await;
-            *backend_for_task.write().await = resolved.clone();
-            job.backend = resolved.clone();
-            match provider {
+            let resolved = resolve(&cfg).await;
+            *backend_for_task.write().await = resolved.label.clone();
+            job.backend = resolved.label;
+            match cfg.provider {
                 TtsProvider::Off => continue,
                 TtsProvider::Webview => {
                     let _ = out.send(job);
                 }
                 TtsProvider::Command | TtsProvider::Auto => {
-                    if let Some(argv) = command_line(&cfg, &resolved) {
-                        run_command(&argv, &job.text).await;
+                    if let Some(argv) = &resolved.argv {
+                        run_command(argv, &job.text).await;
                     }
                     let _ = out.send(job);
                 }
@@ -102,58 +123,62 @@ pub fn spawn(config: Arc<RwLock<AppConfig>>, out: mpsc::UnboundedSender<TtsJob>)
 
     TtsHandle {
         tx,
+        pending,
+        limit,
         dropped,
         backend,
     }
 }
 
-fn effective_provider(cfg: &crate::config::TtsConfig) -> TtsProvider {
+/// 解析实际使用的后端：展示名 + 完整 argv。
+async fn resolve(cfg: &crate::config::TtsConfig) -> ResolvedBackend {
     match cfg.provider {
-        TtsProvider::Auto => {
+        TtsProvider::Off => ResolvedBackend {
+            label: "off".into(),
+            argv: None,
+        },
+        TtsProvider::Webview => ResolvedBackend {
+            label: "webview".into(),
+            argv: None,
+        },
+        TtsProvider::Command => {
             if cfg.command.is_empty() {
-                TtsProvider::Auto
+                ResolvedBackend {
+                    label: "off".into(),
+                    argv: None,
+                }
             } else {
-                TtsProvider::Command
+                ResolvedBackend {
+                    label: format!("command:{}", cfg.command[0]),
+                    argv: Some(cfg.command.clone()),
+                }
             }
         }
-        other => other,
-    }
-}
-
-/// 解析实际使用的后端描述：webview / command:<程序> / off
-pub async fn resolve_backend(cfg: &crate::config::TtsConfig) -> String {
-    match effective_provider(cfg) {
-        TtsProvider::Off => "off".into(),
-        TtsProvider::Webview => "webview".into(),
-        TtsProvider::Command => cfg
-            .command
-            .first()
-            .map(|program| format!("command:{program}"))
-            .unwrap_or_else(|| "off".into()),
-        TtsProvider::Auto => match detect_command().await {
-            Some(argv) => format!("command:{}", argv[0]),
-            None => "off".into(),
-        },
-    }
-}
-
-fn command_line(cfg: &crate::config::TtsConfig, resolved: &str) -> Option<Vec<String>> {
-    if !cfg.command.is_empty() {
-        return Some(cfg.command.clone());
-    }
-    if let Some(program) = resolved.strip_prefix("command:") {
-        let mut argv = vec![program.to_string(), "{text}".to_string()];
-        if program == "espeak-ng" {
-            argv = vec![
-                program.to_string(),
-                "-v".into(),
-                "zh".into(),
-                "{text}".into(),
-            ];
+        TtsProvider::Auto => {
+            // 用户显式写了命令行就按命令行来，否则自动探测
+            if !cfg.command.is_empty() {
+                return ResolvedBackend {
+                    label: format!("command:{}", cfg.command[0]),
+                    argv: Some(cfg.command.clone()),
+                };
+            }
+            match detect_command().await {
+                Some(argv) => ResolvedBackend {
+                    label: format!("command:{}", argv[0]),
+                    argv: Some(argv),
+                },
+                None => ResolvedBackend {
+                    label: "off".into(),
+                    argv: None,
+                },
+            }
         }
-        return Some(argv);
     }
-    None
+}
+
+/// 只要后端描述（设置页展示用）。
+pub async fn resolve_backend(cfg: &crate::config::TtsConfig) -> String {
+    resolve(cfg).await.label
 }
 
 /// 按可用性挑一个命令行 TTS。
@@ -284,5 +309,38 @@ mod tests {
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         assert_eq!(runtime.block_on(resolve_backend(&cfg)), "off");
+    }
+
+    #[test]
+    fn auto_provider_keeps_configured_arguments() {
+        let cfg = crate::config::TtsConfig {
+            provider: TtsProvider::Auto,
+            command: vec!["edge-playback".into(), "--text".into(), "{text}".into()],
+            ..Default::default()
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let resolved = runtime.block_on(resolve(&cfg));
+        assert_eq!(resolved.label, "command:edge-playback");
+        assert_eq!(
+            resolved.argv.unwrap(),
+            vec!["edge-playback", "--text", "{text}"],
+            "自动模式下也要保留用户写的参数"
+        );
+    }
+
+    #[test]
+    fn speak_drops_when_queue_is_full() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let handle = TtsHandle {
+            tx,
+            pending: Arc::new(AtomicUsize::new(0)),
+            limit: Arc::new(AtomicUsize::new(2)),
+            dropped: Arc::new(AtomicU64::new(0)),
+            backend: Arc::new(RwLock::new("off".into())),
+        };
+        assert!(handle.speak("chat", "第一条"));
+        assert!(handle.speak("chat", "第二条"));
+        assert!(!handle.speak("chat", "第三条"), "超过 max_queue 应该丢弃");
+        assert_eq!(handle.dropped(), 1);
     }
 }

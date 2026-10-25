@@ -16,6 +16,7 @@ async fn test_app() -> axum::Router {
     let state = Arc::new(AppState {
         engine,
         web_dir: None,
+        local_only: true,
     });
     router(state)
 }
@@ -79,6 +80,93 @@ async fn sending_without_login_returns_401() {
     let body = to_bytes(response.into_body(), 8192).await.unwrap();
     let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(value["error"]["code"], "not_logged_in");
+}
+
+fn request(method: &str, uri: &str, host: &str, origin: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", host);
+    if let Some(origin) = origin {
+        builder = builder.header("origin", origin);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
+async fn state_endpoint_serves_local_origin() {
+    let response = test_app()
+        .await
+        .oneshot(request(
+            "GET",
+            "/api/state",
+            "127.0.0.1:3939",
+            Some("http://127.0.0.1:3939"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn foreign_origin_gets_403_even_for_reads() {
+    // 任意网页连本机接口（含 WebSocket 握手）必须被拒
+    for uri in ["/api/state", "/api/ws", "/"] {
+        let response = test_app()
+            .await
+            .oneshot(request(
+                "GET",
+                uri,
+                "127.0.0.1:3939",
+                Some("https://evil.example"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{uri} 应该 403");
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], "forbidden_origin");
+    }
+}
+
+#[tokio::test]
+async fn dns_rebinding_host_is_rejected() {
+    let response = test_app()
+        .await
+        .oneshot(request(
+            "GET",
+            "/api/state",
+            "evil.example:3939",
+            Some("http://evil.example:3939"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn typo_in_api_path_returns_json_404_not_html() {
+    // 有前端构建产物时，静态 fallback 不能把 /api/xxx 变成 index.html
+    let dir = std::env::temp_dir().join("makuhime-spa-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), "<html>panel</html>").unwrap();
+
+    let mut config = AppConfig::default();
+    config.rooms.clear();
+    let engine = Engine::start(config).await.unwrap();
+    let state = Arc::new(AppState {
+        engine,
+        web_dir: Some(dir),
+        local_only: true,
+    });
+    let response = router(state)
+        .oneshot(request("GET", "/api/typo", "127.0.0.1:3939", None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"]["code"], "not_found");
 }
 
 #[tokio::test]

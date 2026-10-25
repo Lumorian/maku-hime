@@ -87,7 +87,9 @@ LiveEvent::Popularity / Watched / OnlineRank / LiveStatus / RoomUpdate / Notice 
 ## 4. 悬浮窗与穿透
 
 - 桌面端用一个无边框、透明、置顶的 Tauri 窗口加载 `obs.html?surface=overlay`；
-- 穿透通过 `set_ignore_cursor_events`（GTK 的输入区域）；Wayland 原生窗口下由合成器决定是否采纳，
+- 服务端对 HTTP/WS 统一做来源校验（`origin.rs`）：Host 必须是回环地址（否则拒绝，防 DNS rebinding），
+  带 Origin 的请求必须是本机页面 / Tauri 壳 / 与 Host 同源；
+  穿透通过 `set_ignore_cursor_events`（GTK 的输入区域）；Wayland 原生窗口下由合成器决定是否采纳，
   不采纳时退化成普通置顶窗（启动日志会提示）。用 `GDK_BACKEND=x11` 走 XWayland 时，
   XShape 的输入区域会被 XWayland 转成 `wl_surface.set_input_region`，实测可用；
 - 锁定（穿透）状态下窗口收不到点击，因此解锁入口放在**主窗口**和**托盘菜单**里，
@@ -97,8 +99,10 @@ LiveEvent::Popularity / Watched / OnlineRank / LiveStatus / RoomUpdate / Notice 
 
 ## 5. 历史与 TTS
 
-- 历史：内存环形缓冲（每房间默认 2000 条）+ `~/.local/share/maku-hime/history/{room}.jsonl`；
-  查询走内存，导出读文件（CSV / JSON / JSONL）；
+- 历史：内存环形缓冲（每房间默认 2000 条）+ `~/.local/share/maku-hime/history/{room}.jsonl`。
+  查询走内存，**写盘走独立线程**（每条消息只投递到 channel，线程空闲 500ms 批量 flush，
+  不阻塞 tokio worker）；读尾部时按字节对齐换行再用 `from_utf8_lossy` 解析，
+  1MB 边界切在多字节字符中间也不会整份历史丢失；导出在阻塞线程池里做，最多 50 万条；
 - TTS：队列上限可配，满了丢弃并计数；后端有 `auto`（探测 edge-playback / ekho /
   espeak-ng / spd-say）、`command`（自定义 argv）、`webview`（浏览器 speechSynthesis）、
   `off`；文本会去掉 `[表情]` 与链接，并按字数截断。

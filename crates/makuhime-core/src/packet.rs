@@ -94,6 +94,20 @@ pub fn auth(uid: u64, room_id: u64, buvid: &str, token: &str) -> Result<Vec<u8>>
     encode_json(OP_AUTH, &payload)
 }
 
+/// 单帧解压后的最大明文长度。正常一帧几 KB，留 8MB 足够，
+/// 同时挡住「小压缩包放大成几个 GB」的压缩炸弹。
+pub const MAX_PLAIN_BYTES: usize = 8 * 1024 * 1024;
+
+fn check_plain_size(len: usize) -> Result<()> {
+    if len >= MAX_PLAIN_BYTES {
+        return Err(Error::Packet(format!(
+            "解压后的数据超过上限（{} 字节），疑似压缩炸弹",
+            MAX_PLAIN_BYTES
+        )));
+    }
+    Ok(())
+}
+
 /// 解出一段数据里的所有帧（自动处理 zlib / brotli 嵌套压缩）。
 pub fn decode(buf: &[u8]) -> Result<Vec<Frame>> {
     let mut out = Vec::new();
@@ -113,7 +127,12 @@ fn decode_into(buf: &[u8], out: &mut Vec<Frame>, depth: usize) -> Result<()> {
         let proto = u16::from_be_bytes(buf[cursor + 6..cursor + 8].try_into().unwrap());
         let op = u32::from_be_bytes(buf[cursor + 8..cursor + 12].try_into().unwrap());
 
-        if total_len < HEADER_LEN || header_len < HEADER_LEN || total_len > buf.len() - cursor {
+        if total_len < HEADER_LEN
+            || header_len < HEADER_LEN
+            // header_len 超过 total_len 会让下面的切片 start > end 直接 panic
+            || header_len > total_len
+            || total_len > buf.len() - cursor
+        {
             return Err(Error::Packet(format!(
                 "帧长度非法: total={} header={} remain={}",
                 total_len,
@@ -127,19 +146,23 @@ fn decode_into(buf: &[u8], out: &mut Vec<Frame>, depth: usize) -> Result<()> {
         match proto {
             PROTO_ZLIB => {
                 use std::io::Read;
-                let mut decoder = flate2::read::ZlibDecoder::new(body);
+                let mut decoder = flate2::read::ZlibDecoder::new(body).take(MAX_PLAIN_BYTES as u64);
                 let mut plain = Vec::new();
                 decoder
                     .read_to_end(&mut plain)
                     .map_err(|e| Error::Packet(format!("zlib 解压失败: {e}")))?;
+                check_plain_size(plain.len())?;
                 decode_into(&plain, out, depth + 1)?;
             }
             PROTO_BROTLI => {
                 use std::io::Read;
                 let mut plain = Vec::new();
-                brotli::Decompressor::new(body, 8192)
+                let mut decoder = brotli::Decompressor::new(body, 8192);
+                (&mut decoder)
+                    .take(MAX_PLAIN_BYTES as u64)
                     .read_to_end(&mut plain)
                     .map_err(|e| Error::Packet(format!("brotli 解压失败: {e}")))?;
+                check_plain_size(plain.len())?;
                 decode_into(&plain, out, depth + 1)?;
             }
             _ => out.push(Frame {
@@ -250,6 +273,35 @@ mod tests {
         let mut broken = raw.clone();
         broken[0..4].copy_from_slice(&999u32.to_be_bytes());
         assert!(decode(&broken).is_err());
+    }
+
+    #[test]
+    fn rejects_header_longer_than_packet() {
+        // header_len=32、total_len=16：修复前这里会 start > end panic
+        let mut raw = vec![0u8; 32];
+        raw[0..4].copy_from_slice(&16u32.to_be_bytes());
+        raw[4..6].copy_from_slice(&32u16.to_be_bytes());
+        raw[6..8].copy_from_slice(&0u16.to_be_bytes());
+        raw[8..12].copy_from_slice(&5u32.to_be_bytes());
+        assert!(decode(&raw).is_err());
+    }
+
+    #[test]
+    fn rejects_decompression_bomb() {
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
+
+        // 16MB 的 0，压缩后只有几十 KB
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&vec![0u8; MAX_PLAIN_BYTES * 2]).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let outer = encode(OP_MESSAGE, PROTO_ZLIB, &compressed);
+        let err = decode(&outer).unwrap_err();
+        assert!(
+            err.to_string().contains("上限"),
+            "错误信息应提示超限: {err}"
+        );
     }
 
     #[test]

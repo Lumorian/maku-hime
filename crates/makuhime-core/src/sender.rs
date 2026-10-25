@@ -3,8 +3,6 @@
 //! 发送走官方 msg/send 表单接口，必须带登录 Cookie 与 csrf（即 cookie 里的 bili_jct）。
 //! 凭据保存为 0600 的 credentials.json，只在本机使用。
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -78,13 +76,22 @@ impl Credentials {
             std::fs::create_dir_all(parent)?;
         }
         let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, text)?;
-        #[cfg(unix)]
+        // 先写临时文件再 rename：既避免半截 JSON，也能从一开始就是 0600
+        let tmp = path.with_extension("json.tmp");
         {
-            let mut perms = std::fs::metadata(&path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&path, perms)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options.open(&tmp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
         }
+        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
 

@@ -75,10 +75,14 @@ export function Sidebar({ snapshot, onLogin }: SidebarProps) {
         {snapshot.rooms.map((room) => {
           const live = room.live_status === 1;
           return (
-            <li key={room.room_id}>
+            <li
+              key={room.room_id}
+              className={cn("room-item", room.room_id === activeRoom && "is-active")}
+            >
               <button
                 type="button"
-                className={cn("room-item", room.room_id === activeRoom && "is-active")}
+                className="room-select"
+                aria-current={room.room_id === activeRoom}
                 onClick={() => setActiveRoom(room.room_id)}
               >
                 <span className={cn("live-dot", live && "is-live", room.connected && "is-connected")} />
@@ -89,24 +93,15 @@ export function Sidebar({ snapshot, onLogin }: SidebarProps) {
                     {room.online != null ? ` · ${formatCount(room.online)} 在线` : ""}
                   </span>
                 </span>
-                <span
-                  className="room-remove"
-                  role="button"
-                  tabIndex={0}
-                  title="取消订阅"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void removeRoom(room.room_id, room.uname);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.stopPropagation();
-                      void removeRoom(room.room_id, room.uname);
-                    }
-                  }}
-                >
-                  <IconTrash size={14} />
-                </span>
+              </button>
+              <button
+                type="button"
+                className="room-remove"
+                title="取消订阅"
+                aria-label={`取消订阅 ${room.uname || room.room_id}`}
+                onClick={() => void removeRoom(room.room_id, room.uname)}
+              >
+                <IconTrash size={14} />
               </button>
             </li>
           );

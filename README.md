@@ -39,7 +39,7 @@
 
 ### 依赖
 
-- Rust 1.85+（本项目在 1.99 上开发）
+- Rust 1.88+（本项目在 1.99 上开发；用了 edition 2024 的 let-chains）
 - Node.js 20+ 与 npm
 - Linux 桌面端还需要 WebKitGTK：Arch 上是 `webkit2gtk-4.1`、`gtk3`、`libayatana-appindicator`（托盘可选）
 
@@ -199,14 +199,28 @@ docs/                    设计说明、协议调研、官方面板排版规格
 
 ```bash
 bash scripts/dev.sh 7734200   # 同时起 Rust 服务（3939）与 Vite（5173，热更新）
-cargo test                    # 引擎 / 解析 / 历史 / 路由测试
+cargo test                    # 引擎 / 解析 / 历史 / 路由测试（79 个）
+npm run lint                  # ESLint（TypeScript + react-hooks）
 npm run typecheck             # 前端类型检查
 node scripts/screenshot.mjs http://localhost:5173/ shot.png 8000 1440 900   # headless 截图
 node scripts/capture.mjs 7734200 60 fixtures/live.jsonl                     # 录制真实弹幕做夹具
 ```
 
 弹幕夹具 `crates/makuhime-core/tests/fixtures/messages.jsonl` 就是真实抓包裁剪出来的，
-解析器的单元测试跑在它上面。
+解析器的单元测试跑在它上面。CI（`.github/workflows/ci.yml`）会跑
+`cargo fmt --check`、`cargo clippy -D warnings`、全部 Rust 测试，以及前端的 lint / typecheck / build。
+
+### 安全边界
+
+服务默认只监听 `127.0.0.1`，并且对所有请求做来源校验（见
+[`crates/makuhime-server/src/origin.rs`](crates/makuhime-server/src/origin.rs)）：
+
+- Host 必须是回环地址，挡住 DNS rebinding；
+- 带 `Origin` 的请求必须是本机页面（`http://127.0.0.1:*` / `http://localhost:*`）、
+  Tauri 壳（`tauri://localhost`），或与 Host 同源（局域网部署时）；
+- WebSocket 同样会校验——浏览器不会为 ws 做同源限制，不校验的话任意网页都能读走你的弹幕。
+
+登录凭据只保存在 `~/.config/maku-hime/credentials.json`（0600，写入时先落临时文件再 rename）。
 
 ## 已知限制
 
@@ -215,7 +229,9 @@ node scripts/capture.mjs 7734200 60 fixtures/live.jsonl                     # �
   `GDK_BACKEND=x11 cargo run -p maku-hime -- --overlay`；
 - 扫码登录需要能访问 passport.bilibili.com；
 - getDanmuInfo 有风控（-352），失败时会退回默认弹幕服务器，可能收不到部分私密消息；
-- OBS 页面是透明底，用浏览器直接打开看不清楚，加 `&bg=dark` 预览。
+- OBS 页面是透明底，用浏览器直接打开看不清楚，加 `&bg=dark` 预览；
+- 把 `server.host` 改成 `0.0.0.0` 会把面板暴露到局域网，此时只允许「与 Host 同源」的页面访问，
+  请自行确认网络环境可信。
 
 ## 参考与致谢
 

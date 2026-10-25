@@ -69,6 +69,7 @@ impl IntoResponse for ApiError {
 impl From<Error> for ApiError {
     fn from(err: Error) -> Self {
         let (status, code) = match &err {
+            Error::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             Error::NotLoggedIn => (StatusCode::UNAUTHORIZED, "not_logged_in"),
             Error::Send { .. } => (StatusCode::BAD_REQUEST, "send_failed"),
             Error::Api { .. } => (StatusCode::BAD_GATEWAY, "upstream_error"),
@@ -120,7 +121,15 @@ async fn ws_loop(mut socket: WebSocket, app: SharedState) {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(skipped, "WebSocket 客户端消费过慢，跳过部分事件");
+                        // 丢了事件就补一份全量快照，否则前端数字会永久偏移
+                        tracing::warn!(skipped, "WebSocket 客户端消费过慢，补发快照");
+                        let snapshot = app.engine.snapshot().await;
+                        if send_event(&mut socket, &ServerEvent::Snapshot(Box::new(snapshot)))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -146,11 +155,14 @@ async fn send_event(socket: &mut WebSocket, event: &ServerEvent) -> Result<(), a
 
 // ---------------------------------------------------------------- 房间
 
-async fn get_room(
-    State(app): State<SharedState>,
-    Path(id): Path<u64>,
-) -> ApiResult<Option<RoomState>> {
-    Ok(Json(app.engine.room_state(id).await))
+async fn get_room(State(app): State<SharedState>, Path(id): Path<u64>) -> ApiResult<RoomState> {
+    app.engine.room_state(id).await.map(Json).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("房间 {id} 未被订阅"),
+        )
+    })
 }
 
 async fn add_room(
@@ -227,7 +239,17 @@ async fn clear_history(
     State(app): State<SharedState>,
     Path(id): Path<u64>,
 ) -> ApiResult<serde_json::Value> {
-    app.engine.clear_history(id)?;
+    // clear 会等写线程关闭文件句柄，属于阻塞操作，放到阻塞线程池
+    let engine = app.engine.clone();
+    tokio::task::spawn_blocking(move || engine.clear_history(id))
+        .await
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "clear_failed",
+                err.to_string(),
+            )
+        })??;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -242,7 +264,17 @@ async fn export_history(
     Query(query): Query<ExportQuery>,
 ) -> Result<Response, ApiError> {
     let format = ExportFormat::parse(query.format.as_deref().unwrap_or("json"));
-    let content = app.engine.export_history(id, format)?;
+    // 导出要读整份 JSONL 并拼字符串，属于阻塞 IO，放到阻塞线程池里做
+    let engine = app.engine.clone();
+    let content = tokio::task::spawn_blocking(move || engine.export_history(id, format))
+        .await
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "export_failed",
+                err.to_string(),
+            )
+        })??;
     let file_name = app.engine.export_file_name(id, format);
     let mut response = Response::new(content.into());
     let headers = response.headers_mut();
