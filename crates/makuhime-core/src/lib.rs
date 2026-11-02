@@ -4,11 +4,14 @@
 
 pub mod client;
 pub mod config;
+pub mod emoticon;
 pub mod engine;
 pub mod error;
 pub mod history;
 pub mod http;
+pub mod live;
 pub mod login;
+pub mod manage;
 pub mod model;
 pub mod packet;
 pub mod parser;

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api, apiBase } from "./api";
 import { Composer, RoomHeader } from "./components/Header";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { LivePanel } from "./components/LivePanel";
 import { LoginModal } from "./components/LoginModal";
+import { RoomSettingsPanel } from "./components/RoomSettingsPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Sidebar } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
@@ -25,6 +27,8 @@ export default function App() {
 
   const [panel, setPanel] = useState<Panel>("none");
   const [loginOpen, setLoginOpen] = useState(false);
+  const [liveOpen, setLiveOpen] = useState(false);
+  const [roomSettingsOpen, setRoomSettingsOpen] = useState(false);
   const [overlayEnabled, setOverlayEnabled] = useState(false);
 
   // 主题跟随配置
@@ -37,19 +41,34 @@ export default function App() {
       if (event.key === "Escape") {
         setPanel("none");
         setLoginOpen(false);
+        setLiveOpen(false);
+        setRoomSettingsOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // 桌面端：同步悬浮窗是否打开
+  // 桌面端：同步悬浮窗是否打开（托盘/命令行/自身按钮都能改，轮询兜底）
   useEffect(() => {
     if (!isTauri()) return;
-    void import("@tauri-apps/api/core")
-      .then(({ invoke }) => invoke<boolean>("overlay_visible"))
-      .then(setOverlayEnabled)
-      .catch(() => undefined);
+    let stopped = false;
+    const sync = () => {
+      void import("@tauri-apps/api/core")
+        .then(({ invoke }) => invoke<boolean>("overlay_visible"))
+        .then((visible) => {
+          if (!stopped) setOverlayEnabled(visible);
+        })
+        .catch(() => undefined);
+    };
+    sync();
+    const timer = window.setInterval(sync, 3000);
+    window.addEventListener("focus", sync);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", sync);
+    };
   }, []);
 
   const saveConfig = useCallback(
@@ -70,6 +89,23 @@ export default function App() {
     },
     [toast],
   );
+
+  const unlockOverlay = useCallback(async () => {
+    if (isTauri()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("set_click_through", { enabled: false }).catch(() => undefined);
+    }
+    try {
+      // 重新取一次配置，避免用旧快照覆盖掉别处刚改的设置
+      const current = await api.getConfig();
+      await api.putConfig({
+        ...current,
+        overlay: { ...current.overlay, click_through: false, locked: false },
+      });
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "解锁悬浮窗失败");
+    }
+  }, [toast]);
 
   const toggleOverlay = useCallback(async () => {
     if (isTauri()) {
@@ -113,6 +149,9 @@ export default function App() {
           onOpenHistory={() => setPanel(panel === "history" ? "none" : "history")}
           onOpenSettings={() => setPanel(panel === "settings" ? "none" : "settings")}
           onOpenOverlay={() => void toggleOverlay()}
+          onUnlockOverlay={() => void unlockOverlay()}
+          onOpenLive={() => setLiveOpen(true)}
+          onOpenRoomSettings={() => setRoomSettingsOpen(true)}
           overlayEnabled={overlayEnabled}
         />
 
@@ -140,6 +179,18 @@ export default function App() {
       {panel === "history" && <HistoryPanel room={room} onClose={() => setPanel("none")} />}
 
       {loginOpen && <LoginModal onClose={() => setLoginOpen(false)} />}
+
+      {liveOpen && room && (
+        <LivePanel room={room} snapshot={snapshot} onClose={() => setLiveOpen(false)} />
+      )}
+
+      {roomSettingsOpen && room && (
+        <RoomSettingsPanel
+          room={room}
+          snapshot={snapshot}
+          onClose={() => setRoomSettingsOpen(false)}
+        />
+      )}
 
       <Toasts />
       <div className={`conn-pill conn-${status}`}>

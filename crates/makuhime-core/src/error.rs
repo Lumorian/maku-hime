@@ -37,6 +37,14 @@ pub enum Error {
     #[error("发送弹幕失败 [{code}]: {message}")]
     Send { code: i64, message: String },
 
+    /// 开播 / 停播失败；message 已经翻译成可直接展示的中文
+    #[error("{message}")]
+    Live { code: i64, message: String },
+
+    /// 直播间设置（标题/分区/封面/公告）失败；message 已翻译成中文
+    #[error("{message}")]
+    Manage { code: i64, message: String },
+
     #[error("{0}")]
     Other(String),
 }

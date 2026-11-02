@@ -1,7 +1,7 @@
 // 与 Rust 端 serde 序列化结果一一对应的类型定义。
 
 export type Theme = "dark" | "light";
-export type TtsProvider = "auto" | "webview" | "command" | "off";
+export type TtsProvider = "auto" | "webview" | "command" | "mimo" | "off";
 export type GuardLevel = "none" | "governor" | "admiral" | "captain";
 export type EnterKind =
   | "enter"
@@ -49,8 +49,23 @@ export interface Gift {
   action: string | null;
 }
 
+/** 弹幕正文里内联的小表情（`[滑稽]` 这类），B 站给的是「文本 → 图片」对照表。 */
+export interface ChatEmoticon {
+  text: string;
+  url: string;
+  width: number;
+  height: number;
+}
+
 export type LiveEventBody =
-  | { type: "chat"; user: User; text: string; emoticon: string | null }
+  | {
+      type: "chat";
+      user: User;
+      text: string;
+      emoticon: string | null;
+      /** 老后端 / 旧历史没有这个字段，取用时要兜底成空数组 */
+      emots?: ChatEmoticon[] | null;
+    }
   | { type: "gift"; user: User; gift: Gift }
   | {
       type: "guard";
@@ -97,7 +112,9 @@ export interface RoomState {
   uname: string;
   title: string;
   area: string;
+  area_id: number;
   parent_area: string;
+  parent_area_id: number;
   live_status: number;
   popularity: number;
   attention: number;
@@ -150,6 +167,7 @@ export interface OverlayConfig {
   always_on_top: boolean;
   theme: Theme;
   show_header: boolean;
+  show_composer: boolean;
   locked: boolean;
 }
 
@@ -162,6 +180,19 @@ export interface DanmakuConfig {
   stats_interval_seconds: number;
 }
 
+export interface MimoTtsConfig {
+  /**
+   * API Key。读配置时服务端一律返回空字符串（不把密钥发给前端），
+   * 保存时留空表示「不改动」——是否已经存过看 api_key_set。
+   */
+  api_key: string;
+  /** 服务端是否已经存了 Key（只在读配置时出现）。 */
+  api_key_set?: boolean;
+  base_url: string;
+  model: string;
+  voice: string;
+}
+
 export interface TtsConfig {
   enabled: boolean;
   provider: TtsProvider;
@@ -169,6 +200,7 @@ export interface TtsConfig {
   voice: string;
   rate: number;
   volume: number;
+  mimo: MimoTtsConfig;
   read_chat: boolean;
   read_gift: boolean;
   read_guard: boolean;
@@ -176,6 +208,89 @@ export interface TtsConfig {
   min_super_chat_price: number;
   max_chars: number;
   max_queue: number;
+}
+
+/** 一种可用的推流协议。 */
+export interface StreamEndpoint {
+  protocol: string;
+  addr: string;
+  code: string;
+}
+
+/** 开播接口返回的推流信息。 */
+export interface LiveStream {
+  room_id: number;
+  addr: string;
+  code: string;
+  protocol: string;
+  protocols: StreamEndpoint[];
+}
+
+/** B 站要求这次开播先完成人脸 / 身份认证。 */
+export interface FaceChallenge {
+  code: number;
+  message: string;
+  /** 认证页链接；换不出来时为 null，只能去 App 里认证 */
+  url: string | null;
+}
+
+/** 开播结果：拿到推流，或者被要求先认证。 */
+export type LiveStart =
+  | { status: "stream"; stream: LiveStream }
+  | { status: "verify"; verify: FaceChallenge };
+
+/** 一个可选的小分区。 */
+export interface RoomArea {
+  id: number;
+  name: string;
+  parent: string;
+}
+
+/** 分区目录 + 最近用过的分区。 */
+export interface AreaOptions {
+  areas: RoomArea[];
+  recent: RoomArea[];
+}
+
+/** 直播间当前设置（标题 / 分区 / 封面 / 公告）。 */
+export interface RoomSettings {
+  room_id: number;
+  title: string;
+  area_id: number;
+  area_name: string;
+  parent_name: string;
+  cover: string;
+  /** 1 通过 / 0 审核中 / -1 被拒 */
+  cover_status: number;
+  cover_reason: string;
+  announcement: string;
+  live_status: number;
+}
+
+/** 上传封面的结果。 */
+export interface CoverOutcome {
+  cover: string;
+  status: number;
+  reason: string;
+}
+
+/** 一个表情（官方 / 第三方 IP / 粉丝牌自定义都在同一个结构里）。 */
+export interface Emoticon {
+  id: number;
+  unique_name: string;
+  text: string;
+  url: string;
+  width: number;
+  height: number;
+  perm: number;
+}
+
+/** 一组表情包，对应面板里的一个页签。 */
+export interface EmoticonPackage {
+  id: number;
+  name: string;
+  kind: number;
+  emoticons: Emoticon[];
 }
 
 export interface SendConfig {

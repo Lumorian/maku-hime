@@ -90,12 +90,63 @@ export const IconCopy = (props: IconProps) => (
   </svg>
 );
 
+/** 开播：一个带信号的发射塔。 */
+export const IconBroadcast = (props: IconProps) => (
+  <svg {...base(props)}>
+    <circle cx="12" cy="12" r="2" />
+    <path d="M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4" />
+    <path d="M5 19a10 10 0 0 1 0-14M19 5a10 10 0 0 1 0 14" />
+  </svg>
+);
+
+export const IconEye = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" />
+    <circle cx="12" cy="12" r="2.6" />
+  </svg>
+);
+
+export const IconEyeOff = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M3 3l18 18" />
+    <path d="M10.6 6.2A10.6 10.6 0 0 1 12 6c6.5 0 10 6 10 6a17.6 17.6 0 0 1-3.2 3.7M6.3 6.3A17.7 17.7 0 0 0 2 12s3.5 6 10 6a10.9 10.9 0 0 0 4.1-.8" />
+  </svg>
+);
+
 export const IconQr = (props: IconProps) => (
   <svg {...base(props)}>
     <rect x="3" y="3" width="7" height="7" rx="1" />
     <rect x="14" y="3" width="7" height="7" rx="1" />
     <rect x="3" y="14" width="7" height="7" rx="1" />
     <path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 20v.01" />
+  </svg>
+);
+
+/** 直播间设置：滑杆。 */
+export const IconSliders = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h9M17 17h3" />
+    <circle cx="15" cy="7" r="2" />
+    <circle cx="9" cy="12" r="2" />
+    <circle cx="15" cy="17" r="2" />
+  </svg>
+);
+
+/** 表情：笑脸。 */
+export const IconSmile = (props: IconProps) => (
+  <svg {...base(props)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M8.5 14.2a4.6 4.6 0 0 0 7 0" />
+    <path d="M9 9.6v.01M15 9.6v.01" />
+  </svg>
+);
+
+/** 封面：一张图片。 */
+export const IconImage = (props: IconProps) => (
+  <svg {...base(props)}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <circle cx="8.5" cy="9.5" r="1.4" />
+    <path d="M21 15.5l-4.5-4.5L10 17.5" />
   </svg>
 );
 

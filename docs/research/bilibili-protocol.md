@@ -937,7 +937,24 @@ form: bubble, color, fontsize, mode, msg, roomid, csrf, csrf_token, rnd, [dm_typ
 
 - `csrf` 与 `csrf_token` 同值，都取 Cookie 里的 `bili_jct`（`send.go:50-51,63`）。
 - `SendDefaultDanmaku` 默认值：`bubble=0, color=16777215, fontsize=25, mode=1, dm_type=1`（`send.go:73-84`）。
-- **【缺陷/矛盾】** `send.go:54` 注释写「`dm_type` 为 1 时发送的是表情弹幕」，而 `SendDefaultDanmaku`（默认纯文本路径）却填 `dm_type=1`（`send.go:81`）。Rust 发纯文本建议**不传 `dm_type`**，但该行为**未验证**。
+- **【缺陷/矛盾】** `send.go:54` 注释写「`dm_type` 为 1 时发送的是表情弹幕」，而 `SendDefaultDanmaku`（默认纯文本路径）却填 `dm_type=1`（`send.go:81`）。Rust 发纯文本**不传 `dm_type`**。
+
+#### 7.1.1 表情弹幕：实测结论（2026-11，真实房间 + 真实账号）
+
+对 `msg/send` 做了 20 多次对照实验（`mode=1, color=16777215, fontsize=25` 固定）：
+
+| 发法 | 结果 |
+| --- | --- |
+| `msg=冲鸭`（`official_332` 的 `emoji` 文本），**不带** `dm_type` | `code=0`；B 站回推/历史里是 `dm_type=1` + `emoticon_unique=official_332` + 表情图——**服务端自己认出来了** |
+| `msg=[滑稽]`，不带 `dm_type` | `code=0`；历史里 `emots={"[滑稽]": {emoticon_unique: "emoji_219", url, width, height}}`——正文保持 `[滑稽]`，客户端用对照表换成图 |
+| 任意表情 + `dm_type=1`（配 `emoticon_unique` / `emoticon_id` / `upower_[文本]` / `garb_` / `emoji_` / `url+width+height+bulge_display` / `emoticonOptions` 的 JSON 对象、snake 与 camel 两种键名 / 表单或 multipart / 带不带 `wbi` 签名 / 带不带 `buvid3+buvid4` 与 `dm_img_*` 指纹） | **一律 `10203 表情发送失败~`**，只有 `msg` 为空时是 `-400` |
+
+结论：
+
+1. **客户端不要自己拼大表情参数**。把表情文本当普通弹幕发，B 站会自己识别（大表情 → `dm_type=1`，小黄脸 → 行内 `emots`）。
+2. 官方客户端那条 `dm_type=1` 链路（`userSendDanmaku` + `wbi:true`，表单是 `FormData`）第三方复现不了，B 站按请求指纹直接拒。
+3. **第三方 IP / 装扮（`/bfs/garb/`）表情包**（紫罗兰永恒花园、拜年纪 2022、热词系列…）只能由官方客户端发成大表情；第三方客户端发文本，B 站不会渲染，直播间里显示成 `[包名_表情名]`。这是 B 站侧的限制，客户端无法绕过。
+4. 历史接口 `xlive/web-room/v1/dM/gethistory` 里能看到服务端最终怎么存的（`dm_type`、`emoticon`、`emots`），是排查这类问题最好用的取证手段。
 - 返回：`code`（非 0 即失败）、`data.mode_info.{mode,show_player_type,extra}`、`message` / `msg`（`send.go:21-32`）。
 
 ### 7.2 长度 / 频率

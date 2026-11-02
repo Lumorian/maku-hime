@@ -493,10 +493,18 @@ fn to_csv(events: &[Event]) -> String {
 }
 
 fn csv_escape(raw: &str) -> String {
-    if raw.contains([',', '"', '\n']) {
-        format!("\"{}\"", raw.replace('"', "\"\""))
+    // 防 CSV 公式注入：Excel / WPS 会把 = + - @ 开头的单元格当公式算，
+    // 一条昵称叫 `=cmd|'/c calc'!A0` 的弹幕就能变成载荷。加个前导单引号，
+    // 强制表格软件当纯文本。这些列（id / 昵称 / 内容 / 礼物名）本来就不该以
+    // 运算符开头。
+    let guarded = match raw.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{raw}"),
+        _ => raw.to_string(),
+    };
+    if guarded.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", guarded.replace('"', "\"\""))
     } else {
-        raw.to_string()
+        guarded
     }
 }
 
@@ -536,6 +544,7 @@ mod tests {
                 },
                 text: text.into(),
                 emoticon: None,
+                emots: Vec::new(),
             },
         }
     }
@@ -676,5 +685,17 @@ mod tests {
             },
         });
         assert_eq!(store.query(5, &["enter".into()], Some("关注"), 10).len(), 1);
+    }
+
+    #[test]
+    fn csv_cells_are_neutralised_against_formula_injection() {
+        let dir = temp_dir("csv-injection");
+        let store = HistoryStore::new(dir, 100);
+        store.append(&chat_event(1, "=cmd|'/c calc'!A0"));
+        store.append(&chat_event(1, "普通弹幕"));
+        let csv = store.export(1, ExportFormat::Csv).unwrap();
+        assert!(csv.contains("'=cmd"), "公式前缀必须被中和: {csv}");
+        assert!(!csv.contains(",=cmd"), "不能留下裸露的公式单元格: {csv}");
+        assert!(csv.contains("普通弹幕"));
     }
 }

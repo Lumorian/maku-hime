@@ -26,6 +26,8 @@ pub enum TtsProvider {
     Webview,
     /// 调用配置里的命令行程序
     Command,
+    /// 小米 MiMo TTS：请求云端生成 WAV，再用本机播放器播放
+    Mimo,
     Off,
 }
 
@@ -94,6 +96,8 @@ pub struct OverlayConfig {
     pub always_on_top: bool,
     pub theme: Theme,
     pub show_header: bool,
+    /// 悬浮窗底部是否显示发弹幕输入条
+    pub show_composer: bool,
     /// 悬浮窗锁定（穿透）状态，与 click_through 同步
     pub locked: bool,
 }
@@ -103,7 +107,7 @@ impl OverlayConfig {
     pub fn apply_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
         self.x = x;
         self.y = y;
-        self.width = width.max(240);
+        self.width = width.max(280);
         self.height = height.max(160);
     }
 }
@@ -117,11 +121,13 @@ impl Default for OverlayConfig {
             y: 80,
             font_size: 13,
             opacity: 0.88,
-            click_through: true,
+            // 默认解锁：打开悬浮窗就能拖动、发弹幕；需要穿透时再点锁按钮
+            click_through: false,
             always_on_top: true,
             theme: Theme::Dark,
             show_header: true,
-            locked: true,
+            show_composer: true,
+            locked: false,
         }
     }
 }
@@ -152,6 +158,101 @@ impl Default for DanmakuConfig {
     }
 }
 
+/// 小米 MiMo 云端 TTS 配置。
+///
+/// 请求形态与 dmnotifier 的 tts 插件一致：OpenAI 兼容的 chat/completions，
+/// 请求头用 `api-key`，返回的 WAV 以 base64 放在 choices[0].message.audio.data。
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MimoConfig {
+    /// API Key；config.toml 按 0600 保存，不会出现在日志里
+    pub api_key: String,
+    /// base URL（默认官方地址），实际请求 {base_url}/chat/completions
+    pub base_url: String,
+    pub model: String,
+    /// 预置音色：茉莉 / 冰糖 / 苏打 / 白桦 / Mia / Chloe / Milo / Dean / mimo_default
+    pub voice: String,
+}
+
+impl Default for MimoConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: "https://api.xiaomimimo.com/v1".into(),
+            model: "mimo-v2.5-tts".into(),
+            voice: "茉莉".into(),
+        }
+    }
+}
+
+impl std::fmt::Debug for MimoConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MimoConfig")
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    ""
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("voice", &self.voice)
+            .finish()
+    }
+}
+
+impl MimoConfig {
+    /// 生成实际请求的 chat/completions 地址。
+    pub fn endpoint(&self) -> String {
+        let base = self.base_url.trim().trim_end_matches('/');
+        if base.ends_with("/chat/completions") {
+            base.to_string()
+        } else {
+            format!("{base}/chat/completions")
+        }
+    }
+
+    pub fn configured(&self) -> bool {
+        !self.api_key.trim().is_empty()
+    }
+
+    /// base_url 是否可接受：必须是 https、不带账号密码、不指向本机或内网。
+    ///
+    /// 这里能挡住的是「把 api-key 明文发出去」和「拿本机当跳板打内网」；
+    /// 至于用户自己把 base_url 改成某个公网代理，那是用户的决定（改配置本身
+    /// 就是特权操作，接口令牌才是这条边界）。
+    pub fn base_url_allowed(&self) -> bool {
+        let raw = self.base_url.trim();
+        if raw.is_empty() {
+            return true;
+        }
+        let Ok(url) = url::Url::parse(raw) else {
+            return false;
+        };
+        if url.scheme() != "https" {
+            return false;
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return false;
+        }
+        let Some(host) = url
+            .host_str()
+            .map(|host| host.trim_matches(['[', ']']).to_ascii_lowercase())
+        else {
+            return false;
+        };
+        if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+            return false;
+        }
+        match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => crate::http::is_public_ip(&ip),
+            Err(_) => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TtsConfig {
@@ -162,6 +263,8 @@ pub struct TtsConfig {
     pub voice: String,
     pub rate: f32,
     pub volume: f32,
+    /// 小米 MiMo 云端 TTS 配置（provider = mimo 时使用）
+    pub mimo: MimoConfig,
     pub read_chat: bool,
     pub read_gift: bool,
     pub read_guard: bool,
@@ -182,6 +285,7 @@ impl Default for TtsConfig {
             voice: String::new(),
             rate: 1.0,
             volume: 1.0,
+            mimo: MimoConfig::default(),
             read_chat: true,
             read_gift: true,
             read_guard: true,
@@ -259,9 +363,51 @@ impl AppConfig {
         }
         let text = toml::to_string_pretty(self)?;
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text)?;
+        {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            use std::io::Write;
+            let mut file = options.open(&tmp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+        }
         std::fs::rename(&tmp, path)?;
+        // 配置里可能保存了 TTS API Key；旧文件是 0644 时也要收紧
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
+    }
+
+    /// 对外的配置快照：抹掉 TTS API Key，只告诉调用方「配没配」。
+    ///
+    /// 接口 /api/config、/api/state 和 WS 首帧都走这里，避免密钥在局域网、
+    /// OBS 浏览器源、以及任何能读到接口的进程里裸奔。
+    pub fn to_public_value(&self) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(mimo) = value
+            .get_mut("tts")
+            .and_then(|tts| tts.get_mut("mimo"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            let has_key = mimo
+                .get("api_key")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|key| !key.trim().is_empty());
+            mimo.insert(
+                "api_key".to_string(),
+                serde_json::Value::String(String::new()),
+            );
+            mimo.insert("api_key_set".to_string(), serde_json::Value::Bool(has_key));
+        }
+        value
     }
 
     /// 把明显不合理的值收拢到可用范围，避免前端拿到 NaN / 0 宽高。
@@ -274,7 +420,7 @@ impl AppConfig {
         self.ui.font_size = self.ui.font_size.clamp(10, 28);
         self.ui.opacity = clamp01(self.ui.opacity);
         self.ui.max_rows = self.ui.max_rows.clamp(50, 5000);
-        self.overlay.width = self.overlay.width.clamp(240, 2000);
+        self.overlay.width = self.overlay.width.clamp(280, 2000);
         self.overlay.height = self.overlay.height.clamp(160, 2000);
         self.overlay.font_size = self.overlay.font_size.clamp(10, 28);
         self.overlay.opacity = clamp01(self.overlay.opacity);
@@ -283,9 +429,74 @@ impl AppConfig {
         self.danmaku.history_limit = self.danmaku.history_limit.clamp(200, 20_000);
         self.tts.max_chars = self.tts.max_chars.clamp(10, 200);
         self.tts.max_queue = self.tts.max_queue.clamp(1, 256);
+        self.tts.mimo.api_key = self.tts.mimo.api_key.trim().to_string();
+        self.tts.mimo.base_url = self
+            .tts
+            .mimo
+            .base_url
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        if self.tts.mimo.base_url.is_empty() {
+            self.tts.mimo.base_url = MimoConfig::default().base_url;
+        }
+        if self.tts.mimo.model.trim().is_empty() {
+            self.tts.mimo.model = MimoConfig::default().model;
+        }
+        if self.tts.mimo.voice.trim().is_empty() {
+            self.tts.mimo.voice = MimoConfig::default().voice;
+        }
+        if !self.tts.mimo.base_url_allowed() {
+            tracing::warn!(
+                base_url = %self.tts.mimo.base_url,
+                "MiMo base_url 不是公网 https 地址，已恢复默认值"
+            );
+            self.tts.mimo.base_url = MimoConfig::default().base_url;
+        }
+        // 命令行播报本身就是「配置即执行」，至少要挡住 sh -c 这类万能解释器：
+        // 否则任何能写配置的人都能直接拿到任意代码执行。
+        if self
+            .tts
+            .command
+            .first()
+            .is_some_and(|program| is_shell_like(program))
+        {
+            tracing::warn!(command = ?self.tts.command, "TTS 命令行指向 shell，已忽略");
+            self.tts.command.clear();
+        }
         self.send.max_length = self.send.max_length.clamp(1, 40);
         self
     }
+}
+
+/// 是不是 shell / 万能解释器（命令行播报不允许走它们）。
+fn is_shell_like(program: &str) -> bool {
+    let lowered = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .trim()
+        .to_ascii_lowercase();
+    let name = lowered.strip_suffix(".exe").unwrap_or(&lowered);
+    matches!(
+        name,
+        "sh" | "bash"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "fish"
+            | "csh"
+            | "tcsh"
+            | "busybox"
+            | "cmd"
+            | "powershell"
+            | "pwsh"
+            | "env"
+            | "xargs"
+            | "eval"
+            | "exec"
+            | "nohup"
+    )
 }
 
 fn clamp01(value: f32) -> f32 {
@@ -368,7 +579,7 @@ mod tests {
         // 低于下限的尺寸会被夹住，避免保存成 0×0 的隐形窗口
         overlay.apply_geometry(-10, -20, 10, 10);
         assert_eq!((overlay.x, overlay.y), (-10, -20));
-        assert_eq!((overlay.width, overlay.height), (240, 160));
+        assert_eq!((overlay.width, overlay.height), (280, 160));
     }
 
     #[test]
@@ -379,7 +590,74 @@ mod tests {
         config.danmaku.heartbeat_seconds = 0;
         let config = config.sanitized();
         assert_eq!(config.ui.opacity, 1.0);
-        assert_eq!(config.overlay.width, 240);
+        assert_eq!(config.overlay.width, 280);
         assert_eq!(config.danmaku.heartbeat_seconds, 10);
+    }
+
+    #[test]
+    fn mimo_config_roundtrips_and_hides_key_in_debug() {
+        let dir = std::env::temp_dir().join("makuhime-config-mimo");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let config = AppConfig {
+            tts: TtsConfig {
+                provider: TtsProvider::Mimo,
+                mimo: MimoConfig {
+                    api_key: "sk-secret-value".into(),
+                    voice: "冰糖".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path);
+        assert_eq!(loaded.tts.provider, TtsProvider::Mimo);
+        assert_eq!(loaded.tts.mimo.api_key, "sk-secret-value");
+        assert_eq!(loaded.tts.mimo.voice, "冰糖");
+        let debug = format!("{loaded:?}");
+        assert!(
+            !debug.contains("sk-secret-value"),
+            "Debug 输出了 API Key: {debug}"
+        );
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn mimo_base_url_and_voice_are_normalized() {
+        let mut config = AppConfig::default();
+        config.tts.mimo.base_url = " https://example.com/v1/// ".into();
+        config.tts.mimo.voice = "   ".into();
+        let config = config.sanitized();
+        assert_eq!(
+            config.tts.mimo.endpoint(),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(config.tts.mimo.voice, "茉莉");
+        assert!(!config.tts.mimo.configured());
+        assert_eq!(
+            MimoConfig {
+                base_url: "https://example.com/v1/chat/completions".into(),
+                ..Default::default()
+            }
+            .endpoint(),
+            "https://example.com/v1/chat/completions"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("makuhime-config-mode");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        AppConfig::default().save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "config.toml 可能含 API Key，权限必须是 0600");
     }
 }

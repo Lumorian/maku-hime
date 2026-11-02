@@ -75,6 +75,8 @@ fn print_help() {
 环境变量:\n  \
   MAKUHIME_PORT / MAKUHIME_HOST   覆盖监听地址\n  \
   MAKUHIME_WEB_DIR                指定前端构建产物目录\n  \
+  MAKUHIME_API_TOKEN              指定访问令牌（默认自动生成，存在配置目录的 api-token）\n  \
+  MAKUHIME_SYSTEM_PROXY=1         允许走系统代理（默认直连，切代理不会断弹幕）\n  \
   RUST_LOG                        日志级别（默认 info）",
         makuhime_core::VERSION
     );
@@ -142,6 +144,10 @@ async fn main() -> ExitCode {
     println!("  控制面板: {url}");
     println!("  OBS 弹幕墙: {url}/obs?room=<房间号>");
     println!("  健康检查: {url}/api/health");
+    println!(
+        "  访问令牌: {}（/api 接口需要它，用浏览器打开上面的地址会自动带上）",
+        makuhime_server::auth::token_path().display()
+    );
 
     if args.open_browser || std::env::var("MAKUHIME_OPEN").is_ok() {
         let _ = std::process::Command::new("xdg-open").arg(&url).spawn();

@@ -17,8 +17,12 @@ pub struct RoomInfo {
     pub title: String,
     /// 小分区
     pub area: String,
+    /// 小分区 ID（开播时要传给 startLive）
+    pub area_id: u64,
     /// 大分区
     pub parent_area: String,
+    /// 大分区 ID
+    pub parent_area_id: u64,
     /// 0 未开播 / 1 直播中 / 2 轮播
     pub live_status: i64,
     /// 人气值（热度，不是在线人数）
@@ -103,7 +107,12 @@ fn parse_room_base(value: &Value, fallback_id: u64) -> Option<RoomInfo> {
         uname: string_field(entry, "uname"),
         title: string_field(entry, "title"),
         area: string_field(entry, "area_name"),
+        area_id: entry.get("area_id").and_then(Value::as_u64).unwrap_or(0),
         parent_area: string_field(entry, "parent_area_name"),
+        parent_area_id: entry
+            .get("parent_area_id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         live_status: entry
             .get("live_status")
             .and_then(Value::as_i64)
@@ -133,7 +142,12 @@ async fn fetch_room_info_legacy(http: &HttpClient, room_id: u64) -> Result<RoomI
         uname: String::new(),
         title: string_field(data, "title"),
         area: string_field(data, "area_name"),
+        area_id: data.get("area_id").and_then(Value::as_u64).unwrap_or(0),
         parent_area: string_field(data, "parent_area_name"),
+        parent_area_id: data
+            .get("parent_area_id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         live_status: data.get("live_status").and_then(Value::as_i64).unwrap_or(0),
         popularity: data.get("online").and_then(Value::as_u64).unwrap_or(0),
         attention: data.get("attention").and_then(Value::as_u64).unwrap_or(0),
@@ -242,6 +256,7 @@ mod tests {
                 "7734200": {
                     "room_id": 7734200, "short_id": 6, "uid": 50329118,
                     "title": "【直播】TES vs G2", "area_name": "游戏赛事",
+                    "area_id": 86, "parent_area_id": 1,
                     "parent_area_name": "赛事", "live_status": 1,
                     "online": 144530136, "attention": 17099844,
                     "uname": "哔哩哔哩英雄联盟赛事",
@@ -259,6 +274,8 @@ mod tests {
         assert_eq!(info.room_id, 7734200);
         assert_eq!(info.uname, "哔哩哔哩英雄联盟赛事");
         assert_eq!(info.area, "游戏赛事");
+        assert_eq!(info.area_id, 86);
+        assert_eq!(info.parent_area_id, 1);
         assert!(info.is_live());
         assert_eq!(info.popularity, 144_530_136);
         assert_eq!(info.attention, 17_099_844);

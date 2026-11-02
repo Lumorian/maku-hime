@@ -1,8 +1,14 @@
 import type {
   AppConfig,
+  AreaOptions,
+  CoverOutcome,
+  Emoticon,
+  EmoticonPackage,
   Event,
+  LiveStart,
   QrPoll,
   QrSession,
+  RoomSettings,
   RoomState,
   Snapshot,
 } from "./types";
@@ -10,17 +16,31 @@ import type {
 /** 探测到的服务地址前缀（空字符串表示同源）。 */
 let resolvedBase: string | null = null;
 
+/**
+ * 服务端（或 Tauri 初始化脚本）注入的访问令牌。
+ *
+ * 桌面窗口的来源是 tauri://localhost，拿不到服务下发的 Cookie，只能靠这个；
+ * 浏览器面板则由服务端直接注入到页面里。别的网站的页面拿不到它，
+ * 所以即使猜到了端口也调不动 /api。
+ */
+function apiToken(): string {
+  const injected = (window as unknown as { __MAKU_HIME_TOKEN__?: string })
+    .__MAKU_HIME_TOKEN__;
+  return typeof injected === "string" ? injected : "";
+}
+
+/** 需要携带令牌的请求头；没有令牌就不加（静态预览时会直接 401）。 */
+function authHeaders(): Record<string, string> {
+  const token = apiToken();
+  return token ? { "x-maku-token": token } : {};
+}
+
 function candidateBases(): string[] {
   const injected = (window as unknown as { __MAKU_HIME_PORT__?: number })
     .__MAKU_HIME_PORT__;
-  const list: string[] = [];
-  if (injected) list.push(`http://127.0.0.1:${injected}`);
-  for (let port = 3939; port < 3949; port += 1) {
-    list.push(`http://127.0.0.1:${port}`);
-  }
-  // 同源：Vite dev 代理，或直接访问 http://127.0.0.1:3939
-  list.push("");
-  return list;
+  // 只认「注入的端口」和「同源」两个候选：
+  // 扫 3939-3948 这类跨源探测在新版 CORS 下必然失败，也没有意义。
+  return injected ? [`http://127.0.0.1:${injected}`, ""] : [""];
 }
 
 export async function apiBase(): Promise<string> {
@@ -50,15 +70,21 @@ export function resetApiBase(): void {
 export async function socketUrl(): Promise<string> {
   const base = await apiBase();
   const origin = base || window.location.origin;
-  return origin.replace(/^http/, "ws") + "/api/ws";
+  const url = origin.replace(/^http/, "ws") + "/api/ws";
+  // WebSocket 握手带不了自定义请求头，令牌只能走查询参数（服务端也认这个）
+  const token = apiToken();
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
 }
 
 export class ApiError extends Error {
   readonly code: string;
-  constructor(message: string, code = "unknown") {
+  /** B 站自己的错误码（-352、60034 之类）；本服务自身产生的错误为 null。 */
+  readonly upstream: number | null;
+  constructor(message: string, code = "unknown", upstream: number | null = null) {
     super(message);
     this.name = "ApiError";
     this.code = code;
+    this.upstream = upstream;
   }
 }
 
@@ -67,6 +93,7 @@ async function send<T>(base: string, path: string, init?: RequestInit): Promise<
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
   });
@@ -75,7 +102,11 @@ async function send<T>(base: string, path: string, init?: RequestInit): Promise<
   if (!response.ok) {
     const message =
       payload?.error?.message ?? `请求失败（HTTP ${response.status}）`;
-    throw new ApiError(message, payload?.error?.code ?? "http_error");
+    throw new ApiError(
+      message,
+      payload?.error?.code ?? "http_error",
+      typeof payload?.error?.upstream === "number" ? payload.error.upstream : null,
+    );
   }
   return payload as T;
 }
@@ -114,6 +145,56 @@ export const api = {
       body: JSON.stringify({ room_id: roomId, text }),
     }),
 
+  startLive: (roomId: number) =>
+    request<LiveStart>("/api/live/start", {
+      method: "POST",
+      body: JSON.stringify({ room_id: roomId }),
+    }),
+
+  stopLive: (roomId: number) =>
+    request<{ ok: boolean }>("/api/live/stop", {
+      method: "POST",
+      body: JSON.stringify({ room_id: roomId }),
+    }),
+
+  roomSettings: (roomId: number) =>
+    request<RoomSettings>(`/api/rooms/${roomId}/settings`),
+
+  saveRoomSettings: (
+    roomId: number,
+    patch: { title?: string; area_id?: number; announcement?: string },
+  ) =>
+    request<RoomSettings>(`/api/rooms/${roomId}/settings`, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    }),
+
+  roomAreas: (roomId: number) =>
+    request<AreaOptions>(`/api/rooms/${roomId}/areas`),
+
+  uploadCover: (roomId: number, body: { data?: string; url?: string }) =>
+    request<CoverOutcome>(`/api/rooms/${roomId}/cover`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  emoticons: (roomId: number) =>
+    request<EmoticonPackage[]>(`/api/rooms/${roomId}/emoticons`),
+
+  sendEmoticon: (roomId: number, emoticon: Emoticon) =>
+    request<{ ok: boolean }>("/api/send/emoticon", {
+      method: "POST",
+      body: JSON.stringify({
+        room_id: roomId,
+        unique_name: emoticon.unique_name,
+        text: emoticon.text,
+        id: emoticon.id,
+        url: emoticon.url,
+        width: emoticon.width,
+        height: emoticon.height,
+      }),
+    }),
+
   history: (roomId: number, kinds: string[], keyword: string, limit = 800) => {
     const params = new URLSearchParams();
     if (kinds.length) params.set("kinds", kinds.join(","));
@@ -125,8 +206,14 @@ export const api = {
   clearHistory: (roomId: number) =>
     request<{ ok: boolean }>(`/api/history/${roomId}`, { method: "DELETE" }),
 
-  exportHistoryUrl: async (roomId: number, format: "csv" | "json" | "jsonl") =>
-    `${await apiBase()}/api/history/${roomId}/export?format=${format}`,
+  exportHistoryUrl: async (roomId: number, format: "csv" | "json" | "jsonl") => {
+    // 浏览器下载是顶层导航，带不了自定义请求头；跨源时 Cookie 也不会带，
+    // 所以令牌走查询参数。
+    const params = new URLSearchParams({ format });
+    const token = apiToken();
+    if (token) params.set("token", token);
+    return `${await apiBase()}/api/history/${roomId}/export?${params.toString()}`;
+  },
 
   qrCode: () => request<QrSession>("/api/login/qrcode"),
 

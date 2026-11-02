@@ -8,7 +8,9 @@
 use base64::Engine;
 use serde_json::Value;
 
-use crate::model::{EnterKind, Event, Gift, GuardLevel, LiveEvent, Medal, User, color_hex};
+use crate::model::{
+    ChatEmoticon, EnterKind, Event, Gift, GuardLevel, LiveEvent, Medal, User, color_hex,
+};
 use crate::pb;
 
 /// 解析一条原始消息。用于 `DANMU_MSG`、`SEND_GIFT_V2` 之类带 cmd 的消息体。
@@ -222,15 +224,97 @@ fn parse_danmu(raw: &Value) -> Option<LiveEvent> {
             .and_then(|v| v.get("url"))
             .and_then(Value::as_str)
             .filter(|url| !url.is_empty())
-            .map(str::to_string)
+            .map(https)
     } else {
         None
     };
+
+    // 正文里的内联小表情（[滑稽] 这类）：B 站不会把它们塞进 info[0][13]，
+    // 而是在 info[0][15].extra.emots 里给一张「文本 → 图片」的对照表。
+    let emots = parse_chat_emots(info);
 
     Some(LiveEvent::Chat {
         user,
         text,
         emoticon,
+        emots,
+    })
+}
+
+/// 解析内联小表情对照表。
+///
+/// 形状有两种：`{"[滑稽]": {url, width, height, ...}}` 的对象映射，
+/// 或者 `[{emoji: "[滑稽]", url, ...}]` 的数组。两种都认，认不出就退化成空表。
+fn parse_chat_emots(info: &[Value]) -> Vec<ChatEmoticon> {
+    let Some(extra) = info
+        .first()
+        .and_then(|meta| meta.get(15))
+        .and_then(|v2| v2.get("extra"))
+        .and_then(extra_object)
+    else {
+        return Vec::new();
+    };
+    let Some(emots) = extra.get("emots") else {
+        return Vec::new();
+    };
+
+    let mut result = Vec::new();
+    match emots {
+        Value::Object(map) => {
+            for (key, item) in map {
+                result.extend(chat_emoticon_of(key, item));
+            }
+        }
+        Value::Array(list) => {
+            for item in list {
+                let key = item
+                    .get("emoji")
+                    .or_else(|| item.get("text"))
+                    .or_else(|| item.get("descript"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                result.extend(chat_emoticon_of(key, item));
+            }
+        }
+        _ => {}
+    }
+    // 长标记优先：否则 `[doge]` 会先吃掉 `[doge_金箍]` 的前缀
+    result.sort_by_key(|emote| std::cmp::Reverse(emote.text.chars().count()));
+    result
+}
+
+/// `extra` 既可能是 JSON 字符串（老协议），也可能已经是对象（新协议）。
+fn extra_object(value: &Value) -> Option<Value> {
+    match value {
+        Value::String(raw) => serde_json::from_str::<Value>(raw).ok(),
+        Value::Object(_) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// 一个内联表情：必须有标记文本和图片地址，否则不值得渲染。
+fn chat_emoticon_of(key: &str, item: &Value) -> Option<ChatEmoticon> {
+    let text = if key.trim().is_empty() {
+        item.get("emoji")
+            .or_else(|| item.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        key.to_string()
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    let url = item
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty())?;
+    Some(ChatEmoticon {
+        text,
+        url: https(url),
+        width: item.get("width").and_then(value_as_u64).unwrap_or(0) as u32,
+        height: item.get("height").and_then(value_as_u64).unwrap_or(0) as u32,
     })
 }
 
@@ -284,7 +368,7 @@ fn parse_medal_v2(value: &Value) -> Option<Medal> {
     let fallback = value
         .get("v2_medal_color_level")
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .and_then(css_color_opt)
         .or_else(|| color_hex(color));
     Some(Medal {
         name: name.to_string(),
@@ -294,25 +378,38 @@ fn parse_medal_v2(value: &Value) -> Option<Medal> {
         start: value
             .get("v2_medal_color_start")
             .and_then(Value::as_str)
-            .map(str::to_string)
+            .and_then(css_color_opt)
             .or_else(|| color_hex(color))
             .unwrap_or_default(),
         end: value
             .get("v2_medal_color_end")
             .and_then(Value::as_str)
-            .map(str::to_string)
+            .and_then(css_color_opt)
             .or_else(|| color_hex(color))
             .unwrap_or_default(),
         border: value
             .get("v2_medal_color_border")
             .and_then(Value::as_str)
-            .map(str::to_string)
+            .and_then(css_color_opt)
             .or_else(|| color_hex(color))
             .unwrap_or_default(),
         text: fallback.unwrap_or_default(),
         guard: GuardLevel::from_level(value.get("guard_level").and_then(value_as_i64).unwrap_or(0)),
         light: value.get("is_light").and_then(value_as_i64).unwrap_or(1) != 0,
     })
+}
+
+/// 颜色字符串来自直播间（粉丝牌 / SuperChat 的字段），前端会直接拼进 style。
+/// 只放行 #RGB / #RGBA / #RRGGBB / #RRGGBBAA，其余一律丢掉，
+/// 免得 `red;background:url(...)`、`var(--x)` 这类东西混进 CSS。
+fn css_color_opt(raw: &str) -> Option<String> {
+    let candidate = raw.trim();
+    let hex = candidate.strip_prefix('#')?;
+    if matches!(hex.len(), 3 | 4 | 6 | 8) && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
 }
 
 fn parse_medal_json(value: Option<&Value>) -> Option<Medal> {
@@ -332,8 +429,7 @@ fn parse_medal_json(value: Option<&Value>) -> Option<Medal> {
     let start = value
         .get("medal_color_start")
         .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|v| !v.is_empty())
+        .and_then(css_color_opt)
         .or_else(|| {
             value
                 .get("medal_color")
@@ -344,14 +440,12 @@ fn parse_medal_json(value: Option<&Value>) -> Option<Medal> {
     let end = value
         .get("medal_color_end")
         .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
+        .and_then(css_color_opt)
         .unwrap_or_else(|| start.clone());
     let border = value
         .get("medal_color_border")
         .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
+        .and_then(css_color_opt)
         .unwrap_or_else(|| start.clone());
     Some(Medal {
         name: name.to_string(),
@@ -543,18 +637,18 @@ fn parse_super_chat(raw: &Value) -> Option<LiveEvent> {
         bg_start: data
             .get("background_color_start")
             .and_then(Value::as_str)
-            .unwrap_or("#EDF5FF")
-            .to_string(),
+            .and_then(css_color_opt)
+            .unwrap_or_else(|| "#EDF5FF".to_string()),
         bg_end: data
             .get("background_color_end")
             .and_then(Value::as_str)
-            .unwrap_or("#DBE7FF")
-            .to_string(),
+            .and_then(css_color_opt)
+            .unwrap_or_else(|| "#DBE7FF".to_string()),
         price_color: data
             .get("background_price_color")
             .and_then(Value::as_str)
-            .unwrap_or("#7EA6E0")
-            .to_string(),
+            .and_then(css_color_opt)
+            .unwrap_or_else(|| "#7EA6E0".to_string()),
         id: data.get("id").and_then(value_as_u64).unwrap_or(0),
     })
 }
@@ -1050,4 +1144,73 @@ mod tests {
             "事件应带 type 判别字段: {text}"
         );
     }
+
+    #[test]
+    fn css_colors_from_live_room_are_validated() {
+        assert_eq!(css_color_opt("#FF6699").as_deref(), Some("#FF6699"));
+        assert_eq!(css_color_opt("  #abc ").as_deref(), Some("#abc"));
+        assert_eq!(css_color_opt("#12345678").as_deref(), Some("#12345678"));
+        assert_eq!(css_color_opt("red"), None);
+        assert_eq!(css_color_opt("#ff;background:url(x)"), None);
+        assert_eq!(css_color_opt("var(--evil)"), None);
+        assert_eq!(css_color_opt(""), None);
+        assert_eq!(css_color_opt("expression(alert(1))"), None);
+    }
+    #[test]
+    fn parses_inline_emots_from_extra() {
+        // 内联小表情走 info[0][15].extra.emots：文本是 [滑稽]，客户端自己换成图
+        let raw = serde_json::json!({
+            "cmd": "DANMU_MSG",
+            "info": [
+                [
+                    0, 1, 25, 16777215, 1792951572000i64, 0, 0, "", 0,
+                    { "ts": 1, "ct": "abc" }, 0, "", 0, {}, "",
+                    {
+                        "mode": 0,
+                        "extra": "{\"emots\":{\"[滑稽]\":{\"emoji\":\"[滑稽]\",\"url\":\"http://i0.hdslb.com/e.png\",\"width\":20,\"height\":20}}}",
+                        "user": { "base": { "face": "https://i0.hdslb.com/f.png", "name_color": 0 } }
+                    }
+                ],
+                "哈哈哈[滑稽]",
+                [12345, "观众甲", 0, 0, 0, 10000, 1, ""],
+                [], [], 0, 0, "", 0, 0, null, { "ts": 1, "ct": "abc" }, 0, 0, null, null, 0, 0
+            ]
+        });
+        let event = parse(&raw).expect("应解析出聊天弹幕");
+        match event {
+            LiveEvent::Chat { text, emoticon, emots, .. } => {
+                assert_eq!(text, "哈哈哈[滑稽]");
+                assert!(emoticon.is_none());
+                assert_eq!(emots.len(), 1);
+                assert_eq!(emots[0].text, "[滑稽]");
+                // 图床地址统一升到 https
+                assert_eq!(emots[0].url, "https://i0.hdslb.com/e.png");
+                assert_eq!(emots[0].width, 20);
+            }
+            other => panic!("应该解析成聊天弹幕: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_inline_emots_from_array_shape() {
+        let raw = serde_json::json!({
+            "cmd": "DANMU_MSG",
+            "info": [
+                [0, 1, 25, 16777215, 0, 0, 0, "", 0, { "ts": 1, "ct": "abc" }, 0, "", 0, {}, "",
+                 { "mode": 0, "extra": { "emots": [ { "emoji": "[doge]", "url": "https://i0.hdslb.com/d.png" } ] },
+                   "user": { "base": { "face": "", "name_color": 0 } } }],
+                "[doge]",
+                [1, "观众乙", 0, 0, 0, 10000, 1, ""],
+                [], [], 0, 0, "", 0, 0, null, { "ts": 1, "ct": "abc" }, 0, 0, null, null, 0, 0
+            ]
+        });
+        match parse(&raw) {
+            Some(LiveEvent::Chat { emots, .. }) => {
+                assert_eq!(emots.len(), 1);
+                assert_eq!(emots[0].text, "[doge]");
+            }
+            other => panic!("应该解析成聊天弹幕: {other:?}"),
+        }
+    }
+
 }

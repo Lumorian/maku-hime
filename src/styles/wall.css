@@ -18,10 +18,6 @@
   border-radius: 0;
 }
 
-.wall-bare .wall-scroll {
-  padding: 6px 10px;
-}
-
 .wall-scroll {
   flex: 1;
   min-height: 0;
@@ -45,6 +41,7 @@
 }
 
 .wall-inner {
+  position: relative;
   display: flex;
   flex-direction: column;
   /* 用 margin-top:auto 做「内容不足时贴底」，不要用 justify-content:flex-end：
@@ -55,32 +52,39 @@
   width: 100%;
 }
 
-.row {
+/* ---------------- 一行弹幕：官方内联流 ---------------- */
+
+.chat-item {
+  position: relative;
   flex: 0 0 auto;
-  padding: 5px;
+  /* 左内边距 29px = 头像 24 + 间隙 5，头像绝对定位在 padding box 的左侧 0 */
+  padding: 5px 5px 5px 29px;
   border-radius: 6px;
-  line-height: 20px;
+  line-height: var(--line-height, 20px);
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-size: inherit;
 }
 
-.row:hover {
+/* 关掉头像时把正文挪回左边，不留空列 */
+.wall[data-avatars="off"] .chat-item {
+  padding-left: 5px;
+}
+
+.wall:not(.wall-bd) .chat-item:hover {
   background: var(--row-hover);
 }
 
-.wall.is-compact .row {
-  padding: 2px 5px;
+.wall.is-compact .chat-item {
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
-/* ---------------- 聊天弹幕 ---------------- */
-
-.row-chat {
-  display: flex;
-  gap: 15px;
-  align-items: flex-start;
-}
-
-.avatar {
-  flex: none;
+.chat-avatar {
+  position: absolute;
+  left: 0;
+  /* 与首行文字垂直居中对齐：5px 内边距 + 行盒中心 - 半头像 */
+  top: calc(var(--line-height, 20px) / 2 - 7px);
   width: 24px;
   height: 24px;
   border-radius: 50%;
@@ -88,118 +92,141 @@
   background: var(--panel-3);
   display: grid;
   place-items: center;
-  margin-top: 1px;
 }
 
-.avatar img {
+.chat-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
 
-.avatar-fallback {
+.chat-avatar-fallback {
   font-size: 11px;
   color: var(--text-3);
 }
 
-.row-body {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.uname {
+.user-name {
   color: var(--text-2);
   font-weight: 400;
 }
 
-.uname.is-admin {
+.user-name.is-admin {
   color: var(--brand-strong);
   font-weight: 600;
 }
 
-.uname.is-guard {
+.user-name.is-guard {
   color: var(--guard);
 }
 
-.separator {
+.chat-sep {
   color: var(--text-3);
 }
 
-.row-chat .text {
+.chat-text {
   color: var(--text);
 }
 
-.emoticon {
+.chat-emoticon {
   max-height: 28px;
   vertical-align: middle;
   border-radius: 3px;
 }
 
-/* ---------------- 粉丝勋章 ---------------- */
+/* 正文里的行内小表情（[滑稽] 这种）：跟一行文字等高，不撑行 */
+.chat-emoticon.is-inline {
+  height: 20px;
+  max-height: 1em;
+  min-height: 14px;
+  margin: 0 1px;
+  object-fit: contain;
+  vertical-align: -0.2em;
+}
 
-.medal {
-  display: inline-flex;
-  align-items: center;
+/* ---------------- 粉丝勋章（1:1 官方几何） ---------------- */
+
+.fans-medal-item-ctnr {
+  display: inline-block;
   height: 16px;
-  margin-right: 4px;
-  vertical-align: -3px;
-  border-radius: 8px;
-  overflow: hidden;
-  font-size: 11px;
-  line-height: 1;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  margin: 0 3px 0 4px;
+  vertical-align: middle;
 }
 
-.medal-name {
-  height: 15px;
+.fans-medal-item {
   display: inline-flex;
   align-items: center;
-  padding: 0 5px;
-  color: #fff;
-  font-size: 10px;
-  letter-spacing: 0.2px;
-  transform: scale(0.94);
-  transform-origin: left center;
+  height: 15px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 8px;
+  font-size: 1em;
+  line-height: 1;
   white-space: nowrap;
-  max-width: 84px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.medal-level {
-  height: 15px;
-  min-width: 15px;
+.fans-medal-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.fans-medal-label.has-guard {
+  padding-left: 12px;
+}
+
+/* 视觉缩放 0.8333：布局仍占原始字数宽度，和官方一致 */
+.fans-medal-content {
+  display: inline-block;
+  margin-right: 2px;
+  transform: scale(0.8333);
+  white-space: nowrap;
+}
+
+.fans-medal-level {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 3px;
-  font-size: 10px;
-  font-weight: 600;
-  background: rgba(0, 0, 0, 0.32);
+  width: 8px;
+  height: 12px;
+  font-weight: 700;
+  transform: scale(0.8406);
+}
+
+.fans-medal-level.one-digit {
+  width: 4px;
+}
+
+.fans-medal-level.three-digits {
+  width: 15px;
+}
+
+.fans-medal-guard {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  margin-left: -12px;
+  transform: translateY(-50%);
 }
 
 /* ---------------- 礼物 / 上舰 ---------------- */
 
-.row-gift,
-.row-guard {
-  display: flex;
-  gap: 15px;
-  align-items: flex-start;
-}
-
-.row-gift .uname,
-.row-guard .uname {
-  color: var(--text-2);
+.item-gift .user-name,
+.item-guard .user-name {
+  margin-right: 5px;
 }
 
 .gift-action {
-  color: var(--text-3);
+  color: var(--text-2);
+  margin-right: 4px;
 }
 
-.gift-name,
+.gift-name {
+  color: var(--pay);
+  margin-right: 5px;
+}
+
 .gift-num,
 .gift-price {
   color: var(--pay);
@@ -216,64 +243,60 @@
   font-weight: 600;
 }
 
-.guard-governor {
+.guard-name.guard-governor {
   color: #ff6b6b;
 }
 
-.guard-admiral {
+.guard-name.guard-admiral {
   color: #ffa057;
 }
 
 /* ---------------- 醒目留言 ---------------- */
 
-.row-sc {
-  padding: 5px;
+.item-sc {
+  padding: 5px 0;
 }
 
 .sc-card {
+  position: relative;
+  min-height: 38px;
+  padding: 5px 5px 5px 29px;
   border-radius: 6px;
-  padding: 8px 10px;
-  color: #333;
-  box-shadow: var(--sc-shadow);
-}
-
-.sc-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  overflow-wrap: anywhere;
 }
 
 .sc-name {
   font-weight: 600;
-  font-size: 0.95em;
-  max-width: 70%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-right: 6px;
 }
 
+/* 价格不占位：首行过长时会从价格下面穿过去（官方同款） */
 .sc-price {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  width: 80px;
+  text-align: right;
   font-weight: 700;
-  font-size: 0.95em;
 }
 
 .sc-text {
-  margin-top: 2px;
   font-size: 1em;
-  overflow-wrap: anywhere;
 }
 
-/* ---------------- 系统行 ---------------- */
+/* ---------------- 系统行（进场 / 点赞 / 通知） ---------------- */
 
-.row-system {
-  color: var(--text-3);
+.item-system {
   font-size: 0.92em;
 }
 
-.system-text b {
+.interact-name {
   color: var(--text-2);
-  font-weight: 500;
+  margin-right: 4px;
+}
+
+.interact-desc {
+  color: var(--text-3);
 }
 
 .mini-avatar {
@@ -318,9 +341,9 @@
 
 .wall-empty {
   margin: auto;
+  padding: 40px 0;
   text-align: center;
   color: var(--text-3);
-  padding: 40px 0;
 }
 
 .wall-empty p {
@@ -331,4 +354,13 @@
 
 .wall-empty span {
   font-size: 12px;
+}
+
+.wall-bd .wall-empty {
+  padding: 20px 0;
+}
+
+.wall-bd .wall-empty p {
+  font-size: 12px;
+  color: var(--bd-name);
 }

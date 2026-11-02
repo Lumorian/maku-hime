@@ -6,6 +6,8 @@ import {
   guardClass,
   liveBadge,
   onlineLabel,
+  safeImageUrl,
+  splitChatText,
   timeAgo,
 } from "./util";
 import type { Event, RoomState } from "./types";
@@ -18,7 +20,9 @@ function room(patch: Partial<RoomState> = {}): RoomState {
     uname: "主播",
     title: "标题",
     area: "分区",
+    area_id: 0,
     parent_area: "父分区",
+    parent_area_id: 0,
     live_status: 1,
     popularity: 0,
     attention: 0,
@@ -135,5 +139,63 @@ describe("timeAgo", () => {
     expect(timeAgo(now - 5 * 60_000)).toBe("5 分钟前");
     expect(timeAgo(now - 3 * 3600_000)).toBe("3 小时前");
     expect(timeAgo(null)).toBe("—");
+  });
+});
+
+describe("safeImageUrl", () => {
+  it("放行 http(s) 和常见位图的 data URI", () => {
+    expect(safeImageUrl("https://i0.hdslb.com/bfs/face/a.jpg")).toBe(
+      "https://i0.hdslb.com/bfs/face/a.jpg",
+    );
+    expect(safeImageUrl("data:image/png;base64,AAA")).toBe("data:image/png;base64,AAA");
+  });
+
+  it("挡掉 javascript: / file: / svg 等危险地址", () => {
+    expect(safeImageUrl("javascript:alert(1)")).toBeUndefined();
+    expect(safeImageUrl(" java\nscript:alert(1)")).toBeUndefined();
+    expect(safeImageUrl("file:///etc/passwd")).toBeUndefined();
+    expect(safeImageUrl("data:image/svg+xml,<svg onload=alert(1)>")).toBeUndefined();
+    expect(safeImageUrl("")).toBeUndefined();
+    expect(safeImageUrl(null)).toBeUndefined();
+  });
+});
+
+describe("splitChatText", () => {
+  const emote = (text: string, url = "https://i0.hdslb.com/e.png") => ({
+    text,
+    url,
+    width: 20,
+    height: 20,
+  });
+
+  it("没有表情表时原样返回一段文字", () => {
+    expect(splitChatText("[滑稽]哈哈", null)).toEqual([{ kind: "text", value: "[滑稽]哈哈" }]);
+    expect(splitChatText("", null)).toEqual([]);
+  });
+
+  it("把正文里的表情标记切成图片片段", () => {
+    const segments = splitChatText("哈哈[滑稽]再见", [emote("[滑稽]")]);
+    expect(segments).toHaveLength(3);
+    expect(segments[0]).toEqual({ kind: "text", value: "哈哈" });
+    expect(segments[1].kind).toBe("emote");
+    expect(segments[2]).toEqual({ kind: "text", value: "再见" });
+  });
+
+  it("长标记优先匹配，不会被短标记吃掉前缀", () => {
+    const segments = splitChatText("[doge_金箍]", [emote("[doge]"), emote("[doge_金箍]")]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].kind).toBe("emote");
+    if (segments[0].kind === "emote") expect(segments[0].emote.text).toBe("[doge_金箍]");
+  });
+
+  it("连着多个表情也能全部切出来", () => {
+    const segments = splitChatText("[滑稽][doge][滑稽]", [emote("[滑稽]"), emote("[doge]")]);
+    expect(segments.every((segment) => segment.kind === "emote")).toBe(true);
+    expect(segments).toHaveLength(3);
+  });
+
+  it("缺地址的表情当成普通文字，不渲染破图", () => {
+    const segments = splitChatText("[滑稽]", [{ ...emote("[滑稽]"), url: "" }]);
+    expect(segments).toEqual([{ kind: "text", value: "[滑稽]" }]);
   });
 });

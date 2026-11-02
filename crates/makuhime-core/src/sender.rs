@@ -134,6 +134,29 @@ pub fn validate(text: &str, config: &SendConfig) -> Result<()> {
     Ok(())
 }
 
+/// 表情文本的硬上限：B 站面板里的表情名都远小于这个数。
+const EMOTE_TEXT_MAX_CHARS: usize = 64;
+
+/// 弹幕发送接口的公共表单。
+fn base_form(
+    credentials: &Credentials,
+    room_id: u64,
+    config: &SendConfig,
+    msg: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("color", config.color.to_string()),
+        ("fontsize", config.font_size.to_string()),
+        ("mode", config.mode.to_string()),
+        ("msg", msg.trim().to_string()),
+        ("roomid", room_id.to_string()),
+        ("rnd", now_millis().to_string()),
+        ("bubble", "0".to_string()),
+        ("csrf", credentials.bili_jct.clone()),
+        ("csrf_token", credentials.bili_jct.clone()),
+    ]
+}
+
 /// 发送一条弹幕。
 pub async fn send_danmaku(
     http: &HttpClient,
@@ -148,21 +171,78 @@ pub async fn send_danmaku(
     }
     http.set_cookie(credentials.cookie());
 
-    let form = vec![
-        ("color", config.color.to_string()),
-        ("fontsize", config.font_size.to_string()),
-        ("mode", config.mode.to_string()),
-        ("msg", text.trim().to_string()),
-        ("roomid", room_id.to_string()),
-        ("rnd", now_millis().to_string()),
-        ("bubble", "0".to_string()),
-        ("csrf", credentials.bili_jct.clone()),
-        ("csrf_token", credentials.bili_jct.clone()),
-    ];
+    let form = base_form(credentials, room_id, config, text);
     let value = http
         .post_form("https://api.live.bilibili.com/msg/send", &form)
         .await?;
     check_send_response(&value)
+}
+
+/// 发送一条表情弹幕。
+///
+/// **有文本就按纯文本发**——这是对真实接口验证过的结论：
+/// 通用表情（`official_332`，文本「冲鸭」）和小黄脸（`[滑稽]`）只要把文本发出去，
+/// B 站服务端自己就会把它识别成表情（前者回推 `dm_type=1` + 大表情对象，
+/// 后者回推行内小表情），直播间里正常显示成图。
+///
+/// 反过来，客户端主动带 `dm_type=1` + `emoticon_unique` 会被 B 站一律拒绝
+/// （`10203 表情发送失败`，换任何参数组合、加不加 wbi 签名都一样），
+/// 只有官方客户端/直播姬那条链路能发。所以这里不再自作聪明地拼大表情参数，
+/// 只有「没有文本、只有标识」的表情才走 `dm_type=1`。
+pub async fn send_emoticon(
+    http: &HttpClient,
+    credentials: &Credentials,
+    room_id: u64,
+    unique: &str,
+    text: &str,
+    id: u64,
+    config: &SendConfig,
+) -> Result<()> {
+    let text = text.trim();
+    let unique = unique.trim();
+    if text.is_empty() && unique.is_empty() {
+        return Err(Error::Send {
+            code: -1,
+            message: "这个表情没有可发送的内容".into(),
+        });
+    }
+    // 表情文本来自 B 站面板（形如 `[紫罗兰永恒花园_明白]`），长度不受 20 字限制；
+    // 但仍然给个上限，别让畸形请求把整条表单撑大。
+    if text.chars().count() > EMOTE_TEXT_MAX_CHARS {
+        return Err(Error::Send {
+            code: -1,
+            message: format!("表情文本过长（最多 {EMOTE_TEXT_MAX_CHARS} 个字符）"),
+        });
+    }
+    if !credentials.is_valid() {
+        return Err(Error::NotLoggedIn);
+    }
+    http.set_cookie(credentials.cookie());
+
+    let mut form = base_form(credentials, room_id, config, text);
+    if text.is_empty() {
+        // 兜底路径：没有任何文本的表情，只能靠标识让 B 站认出来
+        form.push(("dm_type", "1".to_string()));
+        form.push(("emoticon_unique", unique.to_string()));
+        if id > 0 {
+            form.push(("emoticon_id", id.to_string()));
+        }
+    }
+    let value = http
+        .post_form("https://api.live.bilibili.com/msg/send", &form)
+        .await?;
+    if let Err(err) = check_send_response(&value) {
+        // 表情这条链路依赖 B 站对 dm_type / emoticon_unique 的解释，失败时留下现场
+        tracing::warn!(
+            room_id,
+            unique,
+            sticker = text.is_empty(),
+            %err,
+            "表情发送失败"
+        );
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn check_send_response(value: &Value) -> Result<()> {
@@ -192,6 +272,7 @@ pub fn explain(code: i64, raw: &str) -> String {
         10031 => "发送太频繁，请稍后再试",
         10032 => "弹幕长度超出限制",
         10024 => "你已被禁言",
+        10203 => "B 站只接受官方客户端发送这类大表情（表情发送失败）",
         10026 => "账号存在风险，暂时不能发送",
         1003212 => "内容与上一条过于相似",
         _ => return format!("{raw}（code={code}）"),
@@ -241,7 +322,16 @@ mod tests {
     fn explains_known_codes() {
         assert!(explain(-101, "x").contains("登录"));
         assert!(explain(10031, "x").contains("频繁"));
+        assert!(explain(10203, "表情发送失败~").contains("官方客户端"));
         assert_eq!(explain(9999, "服务异常"), "服务异常（code=9999）");
+    }
+
+    #[test]
+    fn sends_emotes_by_their_text() {
+        // 有文本的表情按纯文本发（B 站服务端自己渲染成图），不带 dm_type
+        let form = base_form(&Credentials::default(), 1, &SendConfig::default(), "[滑稽]");
+        assert!(form.iter().any(|(k, v)| *k == "msg" && v == "[滑稽]"));
+        assert!(!form.iter().any(|(k, _)| *k == "dm_type"));
     }
 
     #[test]

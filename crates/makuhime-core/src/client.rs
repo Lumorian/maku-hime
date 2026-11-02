@@ -6,10 +6,12 @@
 //! - 认证回复 code != 0 视为失败并重连；
 //! - 超过心跳周期 2.5 倍没收到任何帧就判定半死连接，主动重连。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc::Sender;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -22,6 +24,7 @@ use crate::model::Event;
 use crate::packet::{self, OP_AUTH_REPLY, OP_HEARTBEAT_REPLY, OP_MESSAGE};
 use crate::parser;
 use crate::room;
+use crate::sender::Credentials;
 
 /// 客户端向引擎上报的东西。
 #[derive(Debug, Clone)]
@@ -47,16 +50,24 @@ pub struct DanmakuClient {
     heartbeat: Duration,
     max_backoff: Duration,
     auto_reconnect: bool,
+    /// 登录态：登录后 getDanmuInfo 的 token 与账号绑定，握手要带同一份 Cookie 与 uid
+    credentials: Arc<RwLock<Option<Credentials>>>,
 }
 
 impl DanmakuClient {
-    pub fn new(room_id: u64, http: HttpClient, config: &DanmakuConfig) -> Self {
+    pub fn new(
+        room_id: u64,
+        http: HttpClient,
+        config: &DanmakuConfig,
+        credentials: Arc<RwLock<Option<Credentials>>>,
+    ) -> Self {
         Self {
             room_id,
             http,
             heartbeat: Duration::from_secs(config.heartbeat_seconds.max(5)),
             max_backoff: Duration::from_secs(config.reconnect_max_seconds.max(5)),
             auto_reconnect: config.auto_reconnect,
+            credentials,
         }
     }
 
@@ -136,6 +147,17 @@ impl DanmakuClient {
             .or_else(|| cookie_value(&self.http.cookie(), "buvid3"))
             .unwrap_or_default();
 
+        // 登录态要用账号 uid + 同一份 Cookie：只用 token 而 uid=0 会被直接断开
+        let identity = {
+            let guard = self.credentials.read().await;
+            guard.clone().filter(Credentials::is_valid).map(|creds| {
+                (
+                    creds.dede_user_id.parse::<u64>().unwrap_or(0),
+                    creds.cookie(),
+                )
+            })
+        };
+
         let host = info
             .hosts
             .first()
@@ -156,13 +178,19 @@ impl DanmakuClient {
                 .parse()
                 .unwrap(),
         );
+        if let Some((_, cookie)) = &identity
+            && let Ok(value) = cookie.parse()
+        {
+            headers.insert("Cookie", value);
+        }
 
         let (mut ws, _response) = tokio::select! {
             result = tokio_tungstenite::connect_async(request) => result?,
             _ = cancel.cancelled() => return Ok(()),
         };
 
-        let auth = packet::auth(0, self.room_id, &buvid, &info.token)?;
+        let uid = identity.as_ref().map(|(uid, _)| *uid).unwrap_or(0);
+        let auth = packet::auth(uid, self.room_id, &buvid, &info.token)?;
         ws.send(Message::binary(auth)).await?;
 
         if !emit(tx, ClientEvent::Connected { host: host.clone() }, cancel).await {

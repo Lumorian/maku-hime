@@ -9,9 +9,18 @@
 //!   所以要额外校验 Host 是不是本机。
 //!
 //! 规则：
-//! 1. 绑定在本机地址时，Host 必须是回环地址（127.0.0.1 / localhost / ::1，或 127.x）；
+//! 1. 绑定在本机地址时，Host 必须是回环地址（解析后确实是 127.0.0.0/8 或 ::1）；
 //! 2. 带 Origin 的请求，Origin 必须是本机来源、Tauri 来源，或与 Host 同源（局域网部署）；
-//! 3. 没有 Origin 的请求放行（curl、OBS 的内部请求、非浏览器客户端不会伪造这个头）。
+//! 3. `Sec-Fetch-Site: cross-site` 一律拒绝（浏览器自己标注的跨站来源，比 Origin 更难伪造）；
+//! 4. 没有 Origin 的请求放行（curl、OBS 的内部请求、非浏览器客户端不会伪造这个头）。
+//!
+//! 这一层只负责「谁在问」。**能不能办事**由 [crate::auth] 的访问令牌决定，两层都要过。
+//!
+//! 注意 Host 判断必须走 `std::net` 解析，不能用 `starts_with("127.")` 这类字符串
+//! 前缀 —— 攻击者可以把 `127.evil.example` 的 A 记录指向 127.0.0.1，前缀匹配会把
+//! 它当成回环地址，于是 Host 和 Origin 两道检查同时被绕过。
+
+use std::net::IpAddr;
 
 use axum::Json;
 use axum::extract::{Request, State};
@@ -51,6 +60,15 @@ pub fn request_allowed(headers: &HeaderMap, local_only: bool) -> bool {
             return false;
         }
     }
+    // 浏览器自己标的跨站来源：比 Origin 更难被网页伪造，直接拒。
+    // same-origin / same-site / none（地址栏直接打开）都放行。
+    if let Some(site) = headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        && site.trim().eq_ignore_ascii_case("cross-site")
+    {
+        return false;
+    }
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok());
@@ -61,9 +79,18 @@ pub fn request_allowed(headers: &HeaderMap, local_only: bool) -> bool {
 }
 
 /// Host 是否为回环地址（可带端口）。
+///
+/// 只认真正的回环地址：`localhost`、解析后落在 127.0.0.0/8 的 IPv4、`::1`。
 pub fn is_loopback_host(raw: &str) -> bool {
     let host = host_without_port(raw);
-    host == "localhost" || host == "::1" || host == "127.0.0.1" || host.starts_with("127.")
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_loopback(),
+        Ok(IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
 }
 
 /// Origin 是否为本机 / 桌面壳来源。
@@ -77,7 +104,9 @@ pub fn is_local_origin(origin: &str) -> bool {
         .unwrap_or(origin);
     let authority = authority.split('/').next().unwrap_or(authority);
     let host = host_without_port(authority);
-    host == "localhost" || host == "tauri.localhost" || host == "::1" || host.starts_with("127.")
+    host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("tauri.localhost")
+        || is_loopback_host(host)
 }
 
 /// Origin 与 Host 是否同源（用于局域网/自定义域名部署）。
@@ -141,7 +170,7 @@ mod tests {
         ] {
             assert!(
                 request_allowed(&headers(Some("127.0.0.1:3939"), Some(origin)), true),
-                "{origin} 应该被放行"
+                "该来源应该被放行: {origin}"
             );
         }
     }
@@ -161,6 +190,39 @@ mod tests {
             &headers(Some("evil.example:3939"), Some("http://evil.example:3939")),
             true
         ));
+    }
+
+    #[test]
+    fn blocks_rebinding_domain_that_looks_like_loopback() {
+        // 攻击者把 127.evil.example 的 A 记录指向 127.0.0.1：
+        // 前缀匹配会误判成「本机」，所以必须真的解析 IP。
+        for host in ["127.evil.example:3939", "127.0.0.1.nip.io:3939"] {
+            assert!(!is_loopback_host(host), "不该被当成回环地址: {host}");
+            assert!(!request_allowed(
+                &headers(Some(host), Some("http://evil.example")),
+                true
+            ));
+        }
+        // Host 与 Origin 都是攻击者域名时同样要拦
+        assert!(!request_allowed(
+            &headers(
+                Some("127.evil.example:3939"),
+                Some("http://127.evil.example:3939")
+            ),
+            true
+        ));
+        assert!(!is_local_origin("http://127.evil.example:3939"));
+    }
+
+    #[test]
+    fn blocks_cross_site_sec_fetch_site() {
+        let mut map = headers(Some("127.0.0.1:3939"), None);
+        map.insert("sec-fetch-site", HeaderValue::from_static("cross-site"));
+        assert!(!request_allowed(&map, true));
+
+        let mut map = headers(Some("127.0.0.1:3939"), None);
+        map.insert("sec-fetch-site", HeaderValue::from_static("none"));
+        assert!(request_allowed(&map, true));
     }
 
     #[test]
@@ -184,5 +246,7 @@ mod tests {
         assert_eq!(host_without_port("localhost"), "localhost");
         assert!(is_loopback_host("127.0.1.1:3939"));
         assert!(!is_loopback_host("192.168.1.5:3939"));
+        assert!(is_loopback_host("[::1]:3939"));
+        assert!(!is_loopback_host("0.0.0.0:3939"));
     }
 }

@@ -5,20 +5,26 @@
 //! - 浏览器打开 http://127.0.0.1:3939 得到同一套面板；
 //! - OBS 浏览器源加 http://127.0.0.1:3939/obs?room=<房间号> 就是透明弹幕墙。
 //!
-//! 安全边界见 [origin]：以回环地址监听时，只接受本机 / 桌面壳来源的请求。
+//! 安全边界是两层，缺一不可：
+//! - [origin]：只接受本机 / 桌面壳来源的请求（挡网页与 DNS rebinding）；
+//! - [auth]：所有 /api 接口都要访问令牌（挡同一台机器上的其它进程和残留的浏览器标签页）。
 
 pub mod api;
 pub mod assets;
+pub mod auth;
 pub mod origin;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use axum::Router;
+use axum::http::{HeaderName, Method, header};
 use axum::middleware;
 use makuhime_core::engine::Engine;
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 /// 路由共享状态。
@@ -27,6 +33,12 @@ pub struct AppState {
     pub web_dir: Option<PathBuf>,
     /// 只服务本机时为 true：开启严格的 Host / Origin 校验。
     pub local_only: bool,
+    /// 实际监听端口，注入到页面里（多实例并存时前端不该串到别人的服务）。
+    pub port: u16,
+    /// 访问令牌，见 [auth]。所有 /api 接口都要带。
+    pub token: String,
+    /// TTS 试听的上次调用时间，用来限流（合成一次要花钱、要占额度）。
+    pub tts_test_gate: Mutex<Option<Instant>>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -34,24 +46,39 @@ pub type SharedState = Arc<AppState>;
 /// 组装路由。
 pub fn router(state: SharedState) -> Router {
     let local_only = state.local_only;
+    let port = state.port;
 
     // CORS 只是浏览器读响应的门槛；真正的拦截在 origin 中间件（WebSocket 不受 CORS 约束）。
+    // 这里只放行桌面壳来源和「本机 + 本实例端口」的来源：
+    // 放行任意端口等于把响应交给同机任意网页（它们可以自己起个 localhost:随机端口）。
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let origin = origin.as_bytes();
-            origin == b"tauri://localhost"
-                || origin == b"http://tauri.localhost"
-                || origin == b"http://127.0.0.1"
-                || origin.starts_with(b"http://127.0.0.1:")
-                || origin == b"http://localhost"
-                || origin.starts_with(b"http://localhost:")
+        .allow_origin(AllowOrigin::predicate(move |origin, _| {
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            if origin == "tauri://localhost" || origin == "http://tauri.localhost" {
+                return true;
+            }
+            let Some(authority) = origin.strip_prefix("http://") else {
+                return false;
+            };
+            let Some((host, actual_port)) = authority.rsplit_once(':') else {
+                return false;
+            };
+            actual_port == port.to_string() && origin::is_loopback_host(host)
         }))
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            HeaderName::from_static("x-maku-token"),
+        ]);
 
     Router::new()
         .merge(api::routes())
         .merge(assets::routes(state.clone()))
+        // 内层：令牌校验。外层：来源校验。两层都要过。
+        .layer(middleware::from_fn_with_state(state.clone(), auth::require))
         .layer(middleware::from_fn_with_state(local_only, origin::guard))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -59,10 +86,21 @@ pub fn router(state: SharedState) -> Router {
 }
 
 fn shared_state(engine: Engine, web_dir: Option<PathBuf>, addr: SocketAddr) -> SharedState {
+    let local_only = origin::is_loopback_host(&addr.ip().to_string());
+    if !local_only {
+        tracing::warn!(
+            %addr,
+            "服务监听在非回环地址：Host 校验已关闭，请确认这台机器所在网络可信；\
+             接口仍然需要访问令牌"
+        );
+    }
     Arc::new(AppState {
         engine,
         web_dir,
-        local_only: origin::is_loopback_host(&addr.ip().to_string()),
+        local_only,
+        port: addr.port(),
+        token: auth::token().to_string(),
+        tts_test_gate: Mutex::new(None),
     })
 }
 

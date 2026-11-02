@@ -4,6 +4,7 @@ import OverlayPage from "./obs";
 import "./styles/tokens.css";
 import "./styles/app.css";
 import "./styles/wall.css";
+import "./styles/bd.css";
 
 const container = document.getElementById("root");
 if (!container) {

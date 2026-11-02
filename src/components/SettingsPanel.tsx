@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useStore } from "../store";
 import type {
   AppConfig,
+  MimoTtsConfig,
   OverlayConfig,
   RoomState,
   SendConfig,
@@ -43,6 +44,8 @@ export function SettingsPanel({
     onSave({ ...config, overlay: { ...config.overlay, ...patch } });
   const setTts = (patch: Partial<TtsConfig>) =>
     onSave({ ...config, tts: { ...config.tts, ...patch } });
+  const setMimo = (patch: Partial<MimoTtsConfig>) =>
+    setTts({ mimo: { ...config.tts.mimo, ...patch } });
   const setSend = (patch: Partial<SendConfig>) =>
     onSave({ ...config, send: { ...config.send, ...patch } });
 
@@ -146,6 +149,12 @@ export function SettingsPanel({
               onChange={(value) => setOverlay({ click_through: value, locked: value })}
             />
           </Row>
+          <Row label="显示发送栏">
+            <Switch
+              value={config.overlay.show_composer}
+              onChange={(value) => setOverlay({ show_composer: value })}
+            />
+          </Row>
           <Row label="始终置顶">
             <Switch
               value={config.overlay.always_on_top}
@@ -156,7 +165,7 @@ export function SettingsPanel({
             <div className="inline-inputs">
               <input
                 type="number"
-                min={240}
+                min={280}
                 max={1600}
                 value={config.overlay.width}
                 onChange={(event) => setOverlay({ width: Number(event.target.value) })}
@@ -212,21 +221,79 @@ export function SettingsPanel({
               <option value="auto">自动（系统命令）</option>
               <option value="webview">浏览器语音</option>
               <option value="command">自定义命令</option>
+              <option value="mimo">小米 MiMo（云端）</option>
               <option value="off">关闭</option>
             </select>
           </Row>
-          <div className="field-block">
-            <span className="field-label">命令行（用空格分隔，{"{text}"} 会被替换）</span>
-            <input
-              value={ttsCommand}
-              placeholder="espeak-ng -v zh {text}"
-              onChange={(event) => setTtsCommand(event.target.value)}
-              onBlur={commitTtsCommand}
-            />
-            <p className="field-help">
-              当前生效后端：{snapshot.tts_backend || "off"}。也可以用 piper、edge-playback、ekho。
-            </p>
-          </div>
+
+          {config.tts.provider === "mimo" ? (
+            <div className="field-block">
+              <span className="field-label">MiMo API Key</span>
+              <input
+                type="password"
+                value={config.tts.mimo.api_key}
+                placeholder={
+                  config.tts.mimo.api_key_set
+                    ? "已保存（留空表示不修改）"
+                    : "填小米 MiMo 开放平台的 API Key"
+                }
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setMimo({ api_key: event.target.value })}
+              />
+              <p className="field-help">
+                Key 只存在本机配置文件里，读配置时不会回传到页面；想换一个直接填新的，留空则保持原样。
+              </p>
+              <div className="inline-inputs">
+                <input
+                  value={config.tts.mimo.base_url}
+                  placeholder="https://api.xiaomimimo.com/v1"
+                  aria-label="MiMo Base URL"
+                  onChange={(event) => setMimo({ base_url: event.target.value })}
+                />
+                <input
+                  value={config.tts.mimo.model}
+                  placeholder="mimo-v2.5-tts"
+                  aria-label="MiMo 模型"
+                  onChange={(event) => setMimo({ model: event.target.value })}
+                />
+              </div>
+              <span className="field-label">音色</span>
+              <input
+                list="mimo-voices"
+                value={config.tts.mimo.voice}
+                placeholder="茉莉"
+                aria-label="MiMo 音色"
+                onChange={(event) => setMimo({ voice: event.target.value })}
+              />
+              <datalist id="mimo-voices">
+                {["茉莉", "冰糖", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean", "mimo_default"].map(
+                  (voice) => (
+                    <option key={voice} value={voice} />
+                  ),
+                )}
+              </datalist>
+              <p className="field-help">
+                请求走 <code>{config.tts.mimo.base_url || "https://api.xiaomimimo.com/v1"}</code>
+                /chat/completions，合成 WAV 后用本机 mpv / ffplay / paplay 播放。
+                API Key 只保存在本机 config.toml（0600）。当前生效后端：
+                {snapshot.tts_backend || "off"}
+              </p>
+            </div>
+          ) : (
+            <div className="field-block">
+              <span className="field-label">命令行（用空格分隔，{"{text}"} 会被替换）</span>
+              <input
+                value={ttsCommand}
+                placeholder="espeak-ng -v zh {text}"
+                onChange={(event) => setTtsCommand(event.target.value)}
+                onBlur={commitTtsCommand}
+              />
+              <p className="field-help">
+                当前生效后端：{snapshot.tts_backend || "off"}。也可以用 piper、edge-playback、ekho。
+              </p>
+            </div>
+          )}
           <Row label="朗读弹幕">
             <Switch value={config.tts.read_chat} onChange={(value) => setTts({ read_chat: value })} />
           </Row>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { useStore } from "../store";
 import type { Snapshot } from "../types";
-import { cn, formatCount } from "../util";
+import { cn, formatCount, safeImageUrl } from "../util";
 import { IconPlus, IconTrash, Logo } from "./icons";
 
 interface SidebarProps {
@@ -16,6 +16,8 @@ export function Sidebar({ snapshot, onLogin }: SidebarProps) {
   const toast = useStore((state) => state.toast);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  // 头像地址来自 B 站接口，远端可控
+  const loginFace = safeImageUrl(snapshot.login.face);
 
   const addRoom = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -128,8 +130,8 @@ export function Sidebar({ snapshot, onLogin }: SidebarProps) {
         <button type="button" className="account" onClick={onLogin}>
           {snapshot.login.logged_in ? (
             <>
-              {snapshot.login.face ? (
-                <img src={snapshot.login.face} alt="" referrerPolicy="no-referrer" />
+              {loginFace ? (
+                <img src={loginFace} alt="" referrerPolicy="no-referrer" />
               ) : (
                 <span className="account-fallback">{snapshot.login.uname.slice(0, 1)}</span>
               )}

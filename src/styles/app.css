@@ -403,6 +403,20 @@
   color: var(--text-3);
 }
 
+.header-hint .hint-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--brand);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .ghost,
 .header-actions button {
   display: inline-flex;
@@ -1020,18 +1034,15 @@
   overflow: hidden;
 }
 
-/* 桌面悬浮窗：半透明底板，保证在任意画面上可读（透明度由设置里的「透明度」控制） */
-.overlay-surface.surface-overlay {
-  background: rgba(13, 14, 16, var(--overlay-alpha, 0.88));
-}
-
-.overlay-surface.surface-overlay[data-theme="light"] {
-  background: rgba(246, 247, 248, var(--overlay-alpha, 0.88));
-}
+/* 桌面悬浮窗的皮肤见 styles/bd.css（1:1 还原 bili-dm） */
 
 /* OBS 浏览器源：默认全透明，靠描边阴影保证可读 */
-.overlay-surface.surface-obs .row {
+.overlay-surface.surface-obs .chat-item {
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+.overlay-surface.surface-obs .wall-scroll {
+  padding: 6px 10px;
 }
 
 .overlay-surface.backdrop-dark {
@@ -1042,6 +1053,12 @@
   background: rgba(246, 247, 248, 0.92);
 }
 
+.overlay-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 .obs-brand {
   position: absolute;
   right: 8px;
@@ -1049,80 +1066,184 @@
   font-size: 10px;
   color: rgba(255, 255, 255, 0.4);
 }
+/* ---------------- 开播面板 ---------------- */
 
-.overlay-chrome {
+.live-button.is-live {
+  color: var(--brand);
+}
+
+.live-modal {
+  width: min(540px, 94vw);
+  align-items: stretch;
+}
+
+.live-modal .modal-header h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-room {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.live-room strong {
+  font-size: 13px;
+}
+
+.live-room span {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.live-hint {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.live-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.live-verify {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.live-verify strong {
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.live-verify p {
+  margin: 0;
+}
+
+.live-verify-qr {
+  align-self: center;
+  width: 168px;
+  height: 168px;
+  border-radius: 8px;
+  background: #fff;
+  padding: 6px;
+}
+
+.live-verify > button {
+  align-self: flex-start;
+}
+.live-help {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--brand);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.live-help strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.live-help p,
+.live-help ol {
+  margin: 0;
+}
+
+.live-help ol {
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.live-help-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-help-link code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.live-push {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.live-push .copy-row input {
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.live-protocols {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.live-protocol {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 6px 8px;
-  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
   color: var(--text-2);
-  background: rgba(13, 14, 16, 0.55);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  -webkit-user-select: none;
-  user-select: none;
+  text-align: left;
 }
 
-[data-theme="light"] .overlay-chrome {
-  background: rgba(255, 255, 255, 0.7);
-  border-bottom-color: rgba(0, 0, 0, 0.06);
+.live-protocol:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
-.overlay-title {
+.live-protocol span {
+  color: var(--brand);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.live-protocol code {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: grab;
-}
-
-.overlay-actions {
-  display: flex;
-  gap: 4px;
-  flex: none;
-}
-
-.overlay-actions button {
-  display: inline-grid;
-  place-items: center;
-  width: 24px;
-  height: 22px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-2);
-}
-
-.overlay-actions button:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.overlay-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-}
-
-.overlay-surface .wall-scroll {
-  padding: 8px 10px;
-}
-
-.resize-handle {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  cursor: nwse-resize;
-  background: linear-gradient(
-    135deg,
-    transparent 0 50%,
-    rgba(255, 255, 255, 0.35) 50% 60%,
-    transparent 60%
-  );
+  font-size: 11px;
 }
 
 .empty-room {
@@ -1133,4 +1254,257 @@
   border-radius: var(--radius-lg);
   color: var(--text-3);
   font-size: 13px;
+}
+
+/* ---------------- 表情面板 ---------------- */
+
+.composer-shell,
+.bd-composer-shell {
+  position: relative;
+}
+
+.emoticon-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: min(380px, 92vw);
+  max-height: 372px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  z-index: 45;
+}
+
+.emoticon-tabs {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 页签行用滚轮横向滚：原生滚动条在 WebKitGTK 里是浮在内容上的，
+     会盖住页签文字还抢走点击，所以整条藏掉换成滚轮 + 边缘渐隐提示。 */
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  padding-bottom: 2px;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 6px, #000 calc(100% - 10px), transparent 100%);
+}
+
+.emoticon-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.emoticon-tab {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.emoticon-tab.is-active {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+.emoticon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* 滚动条出现时不要压住最右一列表情 */
+  padding-right: 2px;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+
+.emoticon-item {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+}
+
+/* 大表情发出去要等一个来回：先压暗，避免连点发串 */
+.emoticon-item.is-sending {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.emoticon-item:hover {
+  background: var(--panel-3);
+  border-color: var(--border);
+}
+
+.emoticon-item img {
+  max-width: 34px;
+  max-height: 34px;
+  object-fit: contain;
+}
+
+.emoticon-hint {
+  padding: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.emoticon-hint.is-error {
+  color: var(--danger);
+}
+
+.emoticon-tip {
+  flex: none;
+  margin: 0;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-3);
+}
+
+/* ---------------- 直播间设置 ---------------- */
+
+.room-settings {
+  width: min(560px, 94vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  align-items: stretch;
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.room-settings .field-block select,
+.room-settings .field-block textarea {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  font-family: inherit;
+}
+
+/* 下拉框的高度交给控件自己算：再加 padding 会把文字挤掉（WebKitGTK 特别明显） */
+.room-settings .field-block select {
+  height: 34px;
+  padding: 0 10px;
+  line-height: normal;
+}
+
+.room-settings .field-block textarea {
+  padding: 6px 9px;
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.5;
+}
+
+.area-row {
+  display: flex;
+  gap: 8px;
+}
+
+.area-row select {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+}
+
+.area-recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.cover-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.cover-preview {
+  flex: none;
+  width: 168px;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.cover-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cover-side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cover-status {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.cover-status.is-bad {
+  color: var(--danger);
+}
+
+.file-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-button:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.primary:disabled {
+  background: var(--panel-3);
+  color: var(--text-3);
+  cursor: not-allowed;
+  filter: none;
 }

@@ -12,12 +12,15 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{ClientEvent, DanmakuClient, now_millis};
-use crate::config::{self, AppConfig};
+use crate::config::{self, AppConfig, TtsProvider};
+use crate::emoticon;
 use crate::error::{Error, Result};
 use crate::history::{ExportFormat, HistoryStore};
 use crate::http::HttpClient;
+use crate::live;
 use crate::login::{self, Profile, QrPoll, QrSession};
-use crate::model::{Event, LiveEvent, User};
+use crate::manage;
+use crate::model::{ChatEmoticon, Event, LiveEvent, User};
 use crate::room::{self, RoomInfo};
 use crate::sender::{self, Credentials};
 use crate::tts::{self, TtsHandle, TtsJob};
@@ -72,7 +75,9 @@ pub struct Snapshot {
     pub started_at: i64,
     pub rooms: Vec<RoomState>,
     pub login: LoginState,
-    pub config: AppConfig,
+    /// 已经抹掉密钥的配置（见 AppConfig::to_public_value）：
+    /// 这份快照会广播给所有 WebSocket 客户端，不能带 API Key。
+    pub config: serde_json::Value,
     pub tts_backend: String,
     pub tts_dropped: u64,
     pub history_dir: String,
@@ -107,7 +112,9 @@ struct Inner {
     history: Arc<HistoryStore>,
     tts: TtsHandle,
     login: RwLock<LoginState>,
-    credentials: RwLock<Option<Credentials>>,
+    /// 登录凭据。弹幕客户端也要读它：登录态下 getDanmuInfo 返回的 token 绑定了账号，
+    /// WebSocket 握手必须带同一份 Cookie 与 uid，否则服务端会直接断开。
+    credentials: Arc<RwLock<Option<Credentials>>>,
     seen: Mutex<HashMap<u64, SeenIds>>,
     last_info_refresh: Mutex<HashMap<u64, i64>>,
     /// 刚发出、等待 B 站回推的弹幕文本，用于去掉重复回显
@@ -131,10 +138,17 @@ impl Clone for Engine {
 impl Engine {
     /// 载入配置、启动 TTS 与自动订阅。
     pub async fn start(config: AppConfig) -> Result<Self> {
+        Self::start_with_credentials(config, Credentials::load()).await
+    }
+
+    /// 指定登录凭据启动。测试传 None，避免读到开发机上的真实账号而改变断言。
+    pub async fn start_with_credentials(
+        config: AppConfig,
+        credentials: Option<Credentials>,
+    ) -> Result<Self> {
         let config = config.sanitized();
         let http = HttpClient::new()?;
 
-        let credentials = Credentials::load();
         let mut login = LoginState::default();
         if let Some(creds) = &credentials {
             http.set_cookie(creds.cookie());
@@ -154,11 +168,21 @@ impl Engine {
         let (events, _) = broadcast::channel(2048);
 
         let (tts_out_tx, mut tts_out_rx) = mpsc::unbounded_channel::<TtsJob>();
-        let tts = tts::spawn(config.clone(), tts_out_tx);
+        let (tts_notice_tx, mut tts_notice_rx) = mpsc::unbounded_channel::<String>();
+        let tts = tts::spawn(config.clone(), tts_out_tx, tts_notice_tx);
         let tts_events = events.clone();
         tokio::spawn(async move {
             while let Some(job) = tts_out_rx.recv().await {
                 let _ = tts_events.send(ServerEvent::Speak(job));
+            }
+        });
+        let notice_events = events.clone();
+        tokio::spawn(async move {
+            while let Some(message) = tts_notice_rx.recv().await {
+                let _ = notice_events.send(ServerEvent::Notice {
+                    level: "warn".into(),
+                    message,
+                });
             }
         });
 
@@ -172,7 +196,7 @@ impl Engine {
                 history,
                 tts,
                 login: RwLock::new(login),
-                credentials: RwLock::new(credentials),
+                credentials: Arc::new(RwLock::new(credentials)),
                 seen: Mutex::new(HashMap::new()),
                 last_info_refresh: Mutex::new(HashMap::new()),
                 pending_echoes: std::sync::Mutex::new(HashMap::new()),
@@ -227,7 +251,7 @@ impl Engine {
             started_at: self.inner.started_at,
             rooms,
             login,
-            config,
+            config: config.to_public_value(),
             tts_backend,
             tts_dropped: self.inner.tts.dropped(),
             history_dir: self.inner.history.dir().display().to_string(),
@@ -337,7 +361,12 @@ impl Engine {
         }
 
         let danmaku_config = self.inner.config.read().await.danmaku.clone();
-        let client = DanmakuClient::new(room_id, self.inner.http.clone(), &danmaku_config);
+        let client = DanmakuClient::new(
+            room_id,
+            self.inner.http.clone(),
+            &danmaku_config,
+            self.inner.credentials.clone(),
+        );
         // 有界通道：消费端慢时反压到 WebSocket 读取侧，避免内存无界增长
         let (tx, mut rx) = mpsc::channel::<ClientEvent>(512);
 
@@ -625,6 +654,7 @@ impl Engine {
                 },
                 text: text.trim().to_string(),
                 emoticon: None,
+                emots: Vec::new(),
             },
         };
         self.publish_event(event).await;
@@ -641,6 +671,197 @@ impl Engine {
         if queue.len() > 16 {
             queue.pop_front();
         }
+    }
+
+    // ---------------------------------------------------------------- 开播 / 停播
+
+    /// 用当前登录账号开播：要么拿到推流地址与密钥，要么被要求先完成身份验证。
+    pub async fn start_live(&self, room_id: u64) -> Result<live::StartOutcome> {
+        let credentials = self
+            .inner
+            .credentials
+            .read()
+            .await
+            .clone()
+            .filter(Credentials::is_valid)
+            .ok_or(Error::NotLoggedIn)?;
+        let state = self
+            .room_state(room_id)
+            .await
+            .ok_or_else(|| Error::NotFound("该房间未被订阅".into()))?;
+        let outcome =
+            live::start(&self.inner.http, &credentials, room_id, state.info.area_id).await?;
+        if matches!(outcome, live::StartOutcome::Stream { .. }) {
+            self.notice("success", "开播成功：把推流地址和密钥填入 OBS 后开始推流");
+            // B 站的开播状态要推流后才会变；刷新一次拿最新标题/状态即可
+            if let Err(err) = self.refresh_room(room_id).await {
+                tracing::warn!(%err, room_id, "开播后刷新房间信息失败");
+            }
+        }
+        Ok(outcome)
+    }
+
+    /// 停播（不影响已经连上的弹幕连接）。
+    pub async fn stop_live(&self, room_id: u64) -> Result<()> {
+        let credentials = self
+            .inner
+            .credentials
+            .read()
+            .await
+            .clone()
+            .filter(Credentials::is_valid)
+            .ok_or(Error::NotLoggedIn)?;
+        live::stop(&self.inner.http, &credentials, room_id).await?;
+        self.notice("success", "已停播");
+        if let Err(err) = self.refresh_room(room_id).await {
+            tracing::warn!(%err, room_id, "停播后刷新房间信息失败");
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- 直播间设置
+
+    /// 取登录凭据；没登录直接报错，避免各个设置接口重复判断。
+    async fn creds(&self) -> Result<Credentials> {
+        self.inner
+            .credentials
+            .read()
+            .await
+            .clone()
+            .filter(Credentials::is_valid)
+            .ok_or(Error::NotLoggedIn)
+    }
+
+    /// 读直播间当前设置（标题 / 分区 / 封面 / 公告）。
+    pub async fn room_settings(&self, room_id: u64) -> Result<manage::RoomSettings> {
+        let credentials = self.creds().await?;
+        manage::fetch(&self.inner.http, &credentials, room_id).await
+    }
+
+    /// 分区目录 + 最近用过的分区。
+    pub async fn room_areas(&self, room_id: u64) -> Result<manage::AreaOptions> {
+        let credentials = self.creds().await?;
+        let areas = manage::areas(&self.inner.http, &credentials).await?;
+        let recent = manage::recent_areas(&self.inner.http, &credentials, room_id, &areas)
+            .await
+            .unwrap_or_default();
+        Ok(manage::AreaOptions { areas, recent })
+    }
+
+    /// 保存直播间设置：只提交真正变了的字段。
+    pub async fn update_room_settings(
+        &self,
+        room_id: u64,
+        title: Option<String>,
+        area_id: Option<u64>,
+        announcement: Option<String>,
+    ) -> Result<manage::RoomSettings> {
+        let credentials = self.creds().await?;
+        if let Some(title) = title.as_deref() {
+            manage::set_title(&self.inner.http, &credentials, room_id, title).await?;
+        }
+        if let Some(area_id) = area_id {
+            manage::set_area(&self.inner.http, &credentials, room_id, area_id).await?;
+        }
+        if let Some(announcement) = announcement.as_deref() {
+            manage::set_announcement(&self.inner.http, &credentials, announcement).await?;
+        }
+        // 标题/分区都会出现在头部与弹幕面板里，刷新一次让大家看到
+        if let Err(err) = self.refresh_room(room_id).await {
+            tracing::warn!(%err, room_id, "保存直播间设置后刷新房间信息失败");
+        }
+        manage::fetch(&self.inner.http, &credentials, room_id).await
+    }
+
+    /// 上传直播间封面（前端给的是 base64 或 data URL）。
+    pub async fn upload_room_cover_data(&self, data: &str) -> Result<manage::CoverOutcome> {
+        let raw = manage::decode_cover_data(data)?;
+        let credentials = self.creds().await?;
+        manage::upload_cover(&self.inner.http, &credentials, &raw).await
+    }
+
+    /// 上传直播间封面（前端给的是图片链接，由后端下载后再传）。
+    pub async fn upload_room_cover_url(&self, url: &str) -> Result<manage::CoverOutcome> {
+        let raw = manage::download_cover(&self.inner.http, url).await?;
+        let credentials = self.creds().await?;
+        manage::upload_cover(&self.inner.http, &credentials, &raw).await
+    }
+
+    // ---------------------------------------------------------------- 表情
+
+    /// 拉取表情面板（官方 / 第三方 IP / 粉丝牌自定义都在里面）。
+    pub async fn emoticons(&self, room_id: u64) -> Result<Vec<emoticon::EmoticonPackage>> {
+        let credentials = self.creds().await?;
+        emoticon::fetch(&self.inner.http, &credentials, room_id).await
+    }
+
+    /// 发一条表情弹幕：成功后本地立刻回显，图上得去也看得见。
+    ///
+    /// 回显形状跟着 B 站回推走：大表情（有 `unique`）回显成一张图，
+    /// 文本表情（小黄脸这类）回显成正文里的行内表情。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_emoticon(
+        &self,
+        room_id: u64,
+        unique: &str,
+        text: &str,
+        id: u64,
+        url: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let credentials = self.creds().await?;
+        let send_config = self.inner.config.read().await.send.clone();
+        sender::send_emoticon(
+            &self.inner.http,
+            &credentials,
+            room_id,
+            unique,
+            text,
+            id,
+            &send_config,
+        )
+        .await?;
+
+        let seq = self
+            .inner
+            .echo_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.remember_echo(room_id, text.trim());
+        let text = text.trim();
+        let url = url.trim();
+        let sticker = !unique.trim().is_empty();
+        let event = Event {
+            id: format!("local-{}-{}", now_millis(), seq),
+            ts: now_millis(),
+            room_id,
+            body: LiveEvent::Chat {
+                user: User {
+                    uid: credentials.dede_user_id.parse().unwrap_or(0),
+                    name: credentials.uname.clone(),
+                    face: credentials.face.clone(),
+                    ..Default::default()
+                },
+                text: text.to_string(),
+                emoticon: if sticker {
+                    Some(url.to_string()).filter(|url| !url.is_empty())
+                } else {
+                    None
+                },
+                emots: if !sticker && !text.is_empty() && !url.is_empty() {
+                    vec![ChatEmoticon {
+                        text: text.to_string(),
+                        url: url.to_string(),
+                        width,
+                        height,
+                    }]
+                } else {
+                    Vec::new()
+                },
+            },
+        };
+        self.publish_event(event).await;
+        Ok(())
     }
 
     // ---------------------------------------------------------------- 登录
@@ -705,7 +926,20 @@ impl Engine {
 
     pub async fn update_config(&self, config: AppConfig) -> Result<AppConfig> {
         let config = config.sanitized();
-        let saved = self.mutate_config(|current| *current = config).await;
+        // 前端拿不到明文 API Key（出站时已经被抹掉），所以空值表示「不修改」。
+        let keep_api_key = config.tts.mimo.api_key.is_empty();
+        let saved = self
+            .mutate_config(|current| {
+                let previous_key = std::mem::take(&mut current.tts.mimo.api_key);
+                *current = config;
+                if keep_api_key {
+                    current.tts.mimo.api_key = previous_key;
+                }
+            })
+            .await;
+        // 设置页改后端 / API Key 后立刻反映到 snapshot.tts_backend，不必等下一次播报
+        let backend = tts::resolve_backend(&saved.tts).await;
+        self.inner.tts.set_backend(backend).await;
         self.broadcast_snapshot().await;
         Ok(saved)
     }
@@ -755,10 +989,18 @@ impl Engine {
 
     // ---------------------------------------------------------------- TTS
 
-    pub async fn speak_test(&self, text: &str) -> String {
+    /// 试听。MiMo 走同步路径，配置错误（没填 Key、网络失败）会直接返回给接口；
+    /// 其它后端仍交给队列，由浏览器 / 命令行异步播放。
+    pub async fn speak_test(&self, text: &str) -> std::result::Result<String, String> {
         let text = tts::truncate(&tts::sanitize(text), 100);
+        let cfg = self.inner.config.read().await.tts.clone();
+        if cfg.provider == TtsProvider::Mimo {
+            let label = tts::speak_mimo_now(&cfg, &text).await?;
+            self.inner.tts.set_backend(label.clone()).await;
+            return Ok(label);
+        }
         self.inner.tts.speak("test", text);
-        self.inner.tts.backend().await
+        Ok(self.inner.tts.backend().await)
     }
 
     pub fn tts_dropped(&self) -> u64 {

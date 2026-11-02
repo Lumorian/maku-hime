@@ -4,6 +4,8 @@
 
 [server]
 host = "127.0.0.1"     # 改成 0.0.0.0 会把面板暴露到局域网（不建议）
+# /api 接口需要访问令牌：默认随机生成在 ~/.config/maku-hime/api-token，
+# 也可以用环境变量 MAKUHIME_API_TOKEN 指定。浏览器打开面板时会自动带上。
 port = 3939            # 被占用时自动顺延
 open_browser = false
 
@@ -25,10 +27,11 @@ x = 40
 y = 80
 font_size = 13
 opacity = 0.88         # 悬浮窗底板透明度
-click_through = true   # 锁定 = 点击穿透
+click_through = false  # 默认解锁（可拖动 / 发弹幕）；true = 整窗点击穿透
 always_on_top = true
 theme = "dark"
 show_header = true     # 悬浮窗顶部的小条（直播状态 + 锁定按钮）
+show_composer = true   # 悬浮窗底部的发弹幕输入条
 locked = true
 
 [danmaku]
@@ -41,7 +44,7 @@ stats_interval_seconds = 30
 
 [tts]
 enabled = false
-provider = "auto"      # auto | command | webview | off
+provider = "auto"      # auto | command | webview | mimo | off
 command = []           # provider = command 时填，例如 ["espeak-ng", "-v", "zh", "{text}"]
 voice = ""
 rate = 1.0
@@ -53,6 +56,13 @@ read_super_chat = true
 min_super_chat_price = 0
 max_chars = 60
 max_queue = 32
+
+# 小米 MiMo 云端 TTS（provider = "mimo" 时使用）
+# [tts.mimo]
+# api_key = "…"        # config.toml 会按 0600 保存
+# base_url = "https://api.xiaomimimo.com/v1"   # 只接受公网 https，内网/明文地址会被忽略
+# model = "mimo-v2.5-tts"
+# voice = "茉莉"        # 茉莉 / 冰糖 / 苏打 / 白桦 / Mia / Chloe / Milo / Dean
 
 [send]
 color = 16777215       # 十进制 RGB，默认白色

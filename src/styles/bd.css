@@ -1,0 +1,415 @@
+/* 悬浮窗皮肤：1:1 还原 bili-dm 的浮窗（几何与交互见 docs/research/chat-panel-parity.md） */
+
+.surface-overlay {
+  --bd-bg-rgb: 16, 16, 17;
+  --bd-text: #a2a7ae;
+  --bd-name: #757a81;
+  --bd-pay: #db8700;
+  --bd-pink: #d44e7d;
+  --bd-muted: #9aa0a6;
+  --bd-line: #2f3134;
+  --bd-system: #999999;
+  --bd-offline: #757a81;
+  padding: 4px;
+  gap: 0;
+  background: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.surface-overlay[data-theme="light"] {
+  --bd-bg-rgb: 246, 247, 248;
+  --bd-text: #61666d;
+  --bd-name: #9499a0;
+  --bd-pay: #ffb027;
+  --bd-pink: #ff6699;
+  --bd-muted: #61666d;
+  --bd-line: #e3e5e7;
+  --bd-system: #999999;
+  --bd-offline: #9499a0;
+}
+
+/* 卡片：12px 圆角 + 半透明底色，控制条 / 弹幕 / 发送条三块拼成一张卡 */
+.bd-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: rgba(var(--bd-bg-rgb), var(--overlay-alpha, 0.85));
+  overflow: hidden;
+}
+
+/* ---------------- 控制条 ---------------- */
+
+.bd-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  cursor: grab;
+}
+
+.surface-overlay.is-locked .bd-controls {
+  cursor: default;
+}
+
+.bd-stat {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--bd-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.bd-stat-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bd-dot {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--bd-pink);
+}
+
+.bd-dot[data-state="offline"],
+.bd-dot[data-state="replay"] {
+  color: var(--bd-offline);
+}
+
+.bd-buttons {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bd-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.11);
+  color: #9aa0a6;
+  transition: background 0.12s ease;
+}
+
+.bd-btn:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.bd-btn:active {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.surface-overlay[data-theme="light"] .bd-btn {
+  background: rgba(0, 0, 0, 0.07);
+}
+
+.surface-overlay[data-theme="light"] .bd-btn:hover {
+  background: rgba(0, 0, 0, 0.14);
+}
+
+/* ---------------- 弹幕区 ---------------- */
+
+.bd-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* bili 皮肤：官方配色 + 顶对齐 + 自绘滚动条（隐藏原生滚动条） */
+.wall-bd {
+  color: var(--bd-text);
+}
+
+.wall-bd .wall-scroll {
+  padding: 5px 10px;
+  scrollbar-width: none;
+}
+
+.wall-bd .wall-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.wall-bd .wall-inner {
+  margin-top: 0;
+}
+
+.wall-bd .chat-text,
+.wall-bd .chat-sep {
+  color: var(--bd-text);
+}
+
+.wall-bd .user-name {
+  color: var(--bd-name);
+}
+
+.wall-bd .user-name.is-admin {
+  color: var(--bd-pink);
+}
+
+.wall-bd .user-name.is-guard {
+  color: #00d1f1;
+}
+
+.wall-bd .gift-action {
+  color: var(--bd-text);
+}
+
+.wall-bd .gift-name,
+.wall-bd .gift-num,
+.wall-bd .guard-name {
+  color: var(--bd-pay);
+  font-weight: 400;
+}
+
+.wall-bd .item-system {
+  font-size: 1em;
+}
+
+.wall-bd .item-system .interact-name {
+  color: var(--bd-name);
+}
+
+.wall-bd .item-system .interact-desc {
+  color: var(--bd-system);
+}
+
+/* 醒目留言卡片内头像与正文首行同一列居中（卡片自身 padding 5px） */
+.wall-bd .sc-card .chat-avatar {
+  left: 0;
+  top: calc(var(--line-height, 20px) / 2 - 7px);
+}
+
+.wall-bd .chat-avatar {
+  background: rgba(72, 72, 80, 0.78);
+}
+
+.wall-bd .chat-avatar-fallback {
+  font-size: 8px;
+  color: rgb(220, 220, 225);
+}
+
+/* 4px 自绘滚动条：12px 命中区（左右各 4px 留白），70/255 静默、150/255 悬停 */
+.wall-scrollbar {
+  position: absolute;
+  top: 5px;
+  right: 1px;
+  bottom: 5px;
+  width: 12px;
+  visibility: hidden;
+  z-index: 2;
+}
+
+.wall-scrollbar-thumb {
+  position: absolute;
+  left: 4px;
+  top: 0;
+  width: 4px;
+  height: 20px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.27);
+  will-change: transform;
+}
+
+.surface-overlay[data-theme="light"] .wall-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.27);
+}
+
+.wall-scrollbar:hover .wall-scrollbar-thumb,
+.wall-scrollbar.is-active .wall-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.59);
+}
+
+.surface-overlay[data-theme="light"] .wall-scrollbar:hover .wall-scrollbar-thumb,
+.surface-overlay[data-theme="light"] .wall-scrollbar.is-active .wall-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.59);
+}
+
+/* 「↓ N 条新弹幕」胶囊：84x20，右下角浮在弹幕上 */
+.wall-new-pill.is-bili {
+  right: 12px;
+  bottom: 8px;
+  width: 84px;
+  height: 20px;
+  padding: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--bd-text);
+  font-size: 0.85em;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: none;
+  transition: background 0.12s ease;
+}
+
+.wall-new-pill.is-bili:hover {
+  transform: none;
+  background: rgba(255, 255, 255, 0.27);
+}
+
+.surface-overlay[data-theme="light"] .wall-new-pill.is-bili {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.surface-overlay[data-theme="light"] .wall-new-pill.is-bili:hover {
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* ---------------- 发送条 ---------------- */
+
+.bd-composer-shell {
+  flex: none;
+}
+
+.bd-composer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  /* bili-dm：发送条外边距 (10, 3, 8, 3) */
+  padding: 3px 8px 3px 10px;
+}
+
+.bd-composer input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--bd-text);
+  font-size: 12px;
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.surface-overlay[data-theme="light"] .bd-composer input {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.bd-composer input::placeholder {
+  color: var(--bd-name);
+}
+
+.bd-composer input[readonly] {
+  color: var(--bd-name);
+  cursor: default;
+}
+
+.bd-composer input:disabled {
+  opacity: 0.7;
+}
+
+.bd-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--bd-name);
+}
+
+.bd-hint {
+  flex: none;
+  max-width: 45%;
+  font-size: 11px;
+  color: var(--bd-name);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bd-hint.is-error {
+  color: var(--bd-pink);
+}
+
+.bd-emoji {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.11);
+  color: #9aa0a6;
+}
+
+.bd-emoji:hover,
+.bd-emoji.is-active {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.bd-send {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 11px;
+  background: var(--bd-pink);
+  color: #fff;
+  font-size: 12px;
+}
+
+.bd-send:hover {
+  filter: brightness(1.06);
+}
+
+.bd-send:disabled {
+  background: rgba(255, 255, 255, 0.11);
+  color: var(--bd-muted);
+  cursor: not-allowed;
+  filter: none;
+}
+
+.surface-overlay[data-theme="light"] .bd-send:disabled {
+  background: rgba(0, 0, 0, 0.07);
+}
+
+.bd-send.is-login {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--bd-muted);
+}
+
+/* ---------------- 卡片下方状态行 / 缩放热区 ---------------- */
+
+.bd-status {
+  flex: none;
+  padding: 2px 0 0 6px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--bd-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 右下角 14px 无手柄缩放热区（bili-dm 同款：看得见才奇怪） */
+.resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  background: transparent;
+  cursor: nwse-resize;
+  z-index: 3;
+}

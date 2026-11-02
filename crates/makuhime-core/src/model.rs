@@ -130,6 +130,20 @@ impl EnterKind {
     }
 }
 
+/// 弹幕正文里内联的小表情（\`[滑稽]\` 这类）。
+///
+/// B 站不把这些表情塞进 \`emoticon\`（那是大表情），而是在 \`info[0][15].extra.emots\`
+/// 里下发一张「文本 → 图片」的对照表：正文仍然是 \`[滑稽]\`，客户端自己替换成图。
+/// 这里按同样的方式把对照表带出来，前端渲染时把命中的文本换成图片。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ChatEmoticon {
+    /// 正文里出现的那个标记，例如 \`[滑稽]\`
+    pub text: String,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// 一条归一化的弹幕事件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -140,6 +154,9 @@ pub enum LiveEvent {
         text: String,
         /// 表情大图 URL（普通文字弹幕为 None）
         emoticon: Option<String>,
+        /// 正文里内联的小表情对照表；老数据（旧 JSONL / 旧前端）里可能没有
+        #[serde(default)]
+        emots: Vec<ChatEmoticon>,
     },
     /// 礼物
     Gift { user: User, gift: Gift },
