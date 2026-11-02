@@ -1,3 +1,4 @@
+import logoUrl from "../assets/logo.png";
 import type { SVGProps } from "react";
 
 type IconProps = SVGProps<SVGSVGElement> & { size?: number };
@@ -157,22 +158,24 @@ export const IconSearch = (props: IconProps) => (
   </svg>
 );
 
-/** 品牌标记：一个简化的「幕」字鸟居。 */
+/**
+ * 品牌标记：舞台幕帘的垂幔读作小写 m（= maku-hime = 幕），
+ * 右侧三道横线是飞过的弹幕，右上角的四角星是「姬」。
+ *
+ * 图形来自 `docs/logo/maku-hime-logo.png`，经 `scripts/gen-icons.py`
+ * 裁成透明圆角的 256px 位图（`src/assets/logo.png`）。
+ * 渐变底本身不可着色，所以这里用 <img> 而不是内联 SVG：
+ * 缩放由位图分辨率兜底（256px 够撑到 4× 屏的 64px 显示）。
+ */
 export const Logo = ({ size = 28 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-    <rect width="32" height="32" rx="9" fill="url(#g)" />
-    <path
-      d="M9 12.5h14M11 12.5V22M21 12.5V22M9 12.5c1.6-2.8 3.9-4.2 7-4.2s5.4 1.4 7 4.2"
-      stroke="#fff"
-      strokeWidth="1.9"
-      strokeLinecap="round"
-    />
-    <path d="M16 16.5v5" stroke="#fff" strokeWidth="1.9" strokeLinecap="round" opacity=".85" />
-    <defs>
-      <linearGradient id="g" x1="0" y1="0" x2="32" y2="32">
-        <stop stopColor="#FF6699" />
-        <stop offset="1" stopColor="#FF9E6D" />
-      </linearGradient>
-    </defs>
-  </svg>
+  <img
+    className="brand-logo"
+    src={logoUrl}
+    width={size}
+    height={size}
+    alt=""
+    aria-hidden="true"
+    decoding="async"
+    draggable={false}
+  />
 );

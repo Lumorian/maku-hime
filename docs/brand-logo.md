@@ -10,7 +10,7 @@
 - 产品：轻量、可穿屏的 B 站弹幕姬。Rust 引擎 + Tauri 壳，一份引擎喂三种展示面（控制面板 / 悬浮窗 / OBS 浏览器源）。
 - 性格：工具、克制、本地优先、零外部服务。不是玩具，也不是二次元周边。
 - 视觉现状：深色 UI（`#0D0E10`）、12/16px 圆角、1.8px 圆头线性图标、粉→橙渐变按钮、`Inter` + 思源黑体、拉丁名用等宽字体。
-- 现有标记（可继承，见 §2 末尾）：圆角方块 + 白色简化鸟居，见 `scripts/gen-icons.py` 与 `src/components/icons.tsx` 的 `Logo`。
+- 现有标记：圆角方块 + 白色幕帘 `m`（**方案 A 已落地**）。母版 `docs/logo/maku-hime-logo.png`，派生图标由 `scripts/gen-icons.py` 生成，规则见 §11。
 
 ---
 
@@ -53,9 +53,10 @@
 
 **取舍**：A 是主标，B 是人格，C 是场景。三者共用「等宽圆头描边 + 粉橙渐变 + 白线」这套语言就不会散。
 
-### 关于现有鸟居标记（迁移路径）
-鸟居在日本语境里是「神域入口」，配「姬」语义打架；但它的**上梁弧线**和幕布垂幔是同一个形状。
-所以不必推倒重来：把鸟居的**上梁加弯成两段下凹弧**、去掉两根立柱、补三道弹幕线，就完成了从旧标到新标的平滑迁移。
+### 关于旧鸟居标记（已废弃）
+初版标记是圆角方块 + 白色简化鸟居（上梁 + 两根立柱）。鸟居在日本语境里是「神域入口」，配「姬」语义打架；
+它的**上梁弧线**和幕布垂幔又恰好是同一个形状，于是按下面的路径演化，已经替换完毕：
+把上梁加弯成两段下凹弧、去掉两根立柱、补三道弹幕线与一颗四角星。
 给设计师/模型的一句话：`evolve the existing torii-like glyph into a curtain swag that reads as a lowercase m`。
 
 ---
@@ -253,14 +254,46 @@ blurry edges, inconsistent stroke width, thin spindly lines, low contrast, clip 
 
 ---
 
-## 11. 落地：从 PNG 到仓库里的 32px 图标
+## 11. 落地：已经做完的部分（改图标照着走）
 
-1. **转矢量**：`vtracer --input logo.png --output logo.svg --colormode color`，或 Inkscape「路径 → 描摹位图」，或 Illustrator 图像描摹的 Logo 预设。单色版用 `potrace` 更干净；
-2. **手调**：吸附到 32 网格，边距 4，描边统一 1.75px，圆角 9（32 边长 × 0.28），删掉描摹产生的碎路径；
-3. **出图**：`npx tauri icon path/to/logo.png` 自动生成 `src-tauri/icons/` 全套（32 / 128 / 128@2x / icon.png / ico / icns），比手写 `scripts/gen-icons.py` 省事；
-4. **替换位置**：`src-tauri/icons/*`、`src/components/icons.tsx` 的 `Logo`（内联 SVG，能跟随主题变色）、`index.html` favicon、README 顶部、`.desktop` 图标；
-5. **别忘的三份**：深底白图形 / 浅底渐变图形 / 纯单色反白（OBS 水印、单色打印）；
-6. **留档**：最终 SVG 与本 brief 一起放 `docs/`，下次改版不用重新考古。
+**母版是位图，不转矢量。** 图形只有「白 + 渐变」两层，栅格化后喂给 `npx tauri icon` 的
+质量和手描 SVG 没差别，省掉了描摹后再修碎路径的一整轮返工；28px 的侧栏小标给 192px 位图（约 6.8×），
+高 DPI 与后续放大都够用。
+
+| 位置 | 内容 | 谁生成 |
+| --- | --- | --- |
+| `docs/logo/maku-hime-logo.png` | 设计师交付源图（1254×1254，白底 + 圆角徽章），**不要覆盖** | 设计 |
+| `docs/logo/icon-1024.png` | 裁掉白边、圆角外透明的图标母版 | `scripts/gen-icons.py` |
+| `src-tauri/icons/*` | 32/64/128/128@2x/icon.png + ico + icns + Windows Store 方块图 | `npx tauri icon` |
+| `src/assets/logo.png` | 面板侧栏 28px 品牌标（192×192） | `scripts/gen-icons.py` |
+| `public/favicon.png`、`favicon.ico`、`apple-touch-icon.png` | 浏览器标签页 / 添加到桌面 | `scripts/gen-icons.py` |
+| `README.md` 顶部 | 引用 `docs/logo/icon-1024.png` | — |
+
+一条命令重跑全部：
+
+```bash
+python3 scripts/gen-icons.py   # 需要 Pillow；会自动调用 npx tauri icon
+```
+
+脚本只做几何处理（按饱和度找徽章边界 → 裁白边 → 缩放到目标尺寸 → 套圆角 alpha），
+**不重绘图形**，所以换母版就等于换全套图标。
+
+### 母版实测几何（改版时用来核对新稿）
+
+| 项 | 实测值 | 备注 |
+| --- | --- | --- |
+| 画布 | 1254×1254，四周白边 47px | 交付图有白边，必须裁，否则图标发虚 |
+| 徽章 | 1160×1160 | 裁完就是满画布 |
+| 圆角半径 | 222.5px ≈ 边长 **19.2%** | 拟合残差 0.27px（brief 里写的 28% 与成稿不符，以成稿为准） |
+| 渐变 | 左下粉 → 右上橙，对角线 45° | 左上 ≈ `#FF6D8C`、中心 `#FC7976`、右上偏橙 |
+| 描边 | ≈78px ≈ 边长 **6.2%** | 三根竖笔同粗：x∈[229,306]、[489,567]、[744,821] |
+| 白色 | `#FEFEFE`（254） | 白底 253、图形 254，只差 1 级，抠图别用"近白"阈值，要用饱和度找徽章 |
+
+### 还需要人补的三份（尚未生产）
+
+- **纯单色版**（白底粉图形 / 深底白图形）：OBS 水印、单色印刷、favicon 极简版；
+- **横版 lockup**（图形 + 「幕姬」+ maku-hime）：见 §8，字标自己排，不要 AI 排字；
+- **吉祥物头像**（方案 B）与 **README 头图**（方案 C）：目前 README 头图位置放的是图标。
 
 ---
 
@@ -268,7 +301,7 @@ blurry edges, inconsistent stroke width, thin spindly lines, low contrast, clip 
 
 ```text
 【概念】舞台幕布垂幔 = 小写 m = 幕；谷底短竖 = 幕字竖笔；三道横线 = 弹幕；四角星 = 姬。
-【底】圆角方 28%，135° #FF6699 → #FF9E6D，无阴影无噪点。
+【底】圆角方 28%（生图用；成稿实测 19.2%），135° #FF6699 → #FF9E6D，无阴影无噪点。
 【形】纯白，等宽圆头描边 5.5%，4 个元素，占画布 58%，光学居中。
 【禁】文字 / 3D / 投影 / 辉光 / 纹理 / 多重方案。
 【验】32px 可读，弧线同粗，圆角一致，无假字，色准 #FF6699。

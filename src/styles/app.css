@@ -36,6 +36,11 @@
   padding: 2px 4px 8px;
 }
 
+.brand-logo {
+  display: block;
+  flex: none;
+}
+
 .brand-text {
   display: flex;
   flex-direction: column;

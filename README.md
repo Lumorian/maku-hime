@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo/icon-1024.png" width="112" height="112" alt="maku-hime logo" />
+</p>
+
 # maku-hime · 幕姬
 
 > 轻量、可穿屏的 B 站弹幕姬。原生直连 B 站直播协议，零外部服务；一份引擎同时喂饱桌面面板、悬浮窗和 OBS 浏览器源。
