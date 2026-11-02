@@ -1178,7 +1178,12 @@ mod tests {
         });
         let event = parse(&raw).expect("应解析出聊天弹幕");
         match event {
-            LiveEvent::Chat { text, emoticon, emots, .. } => {
+            LiveEvent::Chat {
+                text,
+                emoticon,
+                emots,
+                ..
+            } => {
                 assert_eq!(text, "哈哈哈[滑稽]");
                 assert!(emoticon.is_none());
                 assert_eq!(emots.len(), 1);
@@ -1212,5 +1217,4 @@ mod tests {
             other => panic!("应该解析成聊天弹幕: {other:?}"),
         }
     }
-
 }
